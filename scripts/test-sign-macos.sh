@@ -19,6 +19,8 @@ mkdir "$TEST_WORK/tools" "$TEST_WORK/scratch"
 export REAL_OPENSSL REAL_DITTO REAL_PLUTIL REAL_RM
 # shellcheck source=scripts/macos-certificate-import.sh
 source "$ROOT/scripts/macos-certificate-import.sh"
+# shellcheck source=scripts/macos-ticket-policy.sh
+source "$ROOT/scripts/macos-ticket-policy.sh"
 # Classify only complete known constants, never arbitrary numeric/private text.
 while IFS='|' read -r message status cause; do
   printf 'security> security: SecKeychainItemImport: %s\n' "$message" > "$TEST_WORK/diagnostic-input"
@@ -168,6 +170,9 @@ id=12345678-1234-1234-1234-123456789abc
 other=87654321-1234-1234-1234-123456789abc
 if [[ $1 == --find ]]; then echo "/fixture/$2"; exit 0; fi
 if [[ $1 == stapler ]]; then
+  printf '%s\n' "$2" >> "$MOCK_STATE/tickets"
+  if [[ $2 == validate && $MOCK_SCENARIO == validation-transient ]]; then echo 'CloudKit network connection lost' >&2; echo 'MUST-NOT-RETAIN fixture-p12-password' >&2; exit 68; fi
+  if [[ $2 == validate && $MOCK_SCENARIO == validation-mutate-archive ]]; then printf 'changed\n' >> "$NOTARY_EVIDENCE_DIR/app/stapled-app.zip"; fi
   if [[ $2 == staple && $MOCK_SCENARIO == ticket-transient ]]; then echo 'CloudKit network connection lost' >&2; exit 68; fi
   [[ $2 != staple || $MOCK_SCENARIO != staple-failure ]] || exit 68
   [[ $2 != validate || $MOCK_SCENARIO != validation-failure ]] || exit 68
@@ -264,6 +269,211 @@ assert_private() {
   grep -REq "fixture-p12-password|MUST-NOT-RETAIN|$(printf '%064d' 0)" "${private_paths[@]}" || result=$?
   [[ $result == 1 ]] || { echo 'private material escaped or privacy inspection failed' >&2; exit 1; }
 }
+verified_recovery_repro() {
+  new_case success verified-recovery
+  TARGET="$MOCK_STATE/takedown.app"
+  run_signer
+  retained=$(jq -r .verified_sha256 "$NOTARY_EVIDENCE_DIR/app/receipt.json")
+  MOCK_SCENARIO=validation-transient
+  result=0; run_signer || result=$?
+  printf 'Verified-restore transient validation result: %s (expected 75)\n' "$result"
+  if [[ $result != 75 ]]; then cat "$MOCK_STATE/output"; cat "$NOTARY_EVIDENCE_DIR/app/receipt.json"; fi
+  [[ $result == 75 ]]
+  jq -e --arg sha "$retained" '.state=="validation-pending" and .verified_sha256==$sha and .failure_class=="cloudkit-transport" and .validation_attempts==1' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+  MOCK_SCENARIO=success
+  run_signer
+  jq -e --arg sha "$retained" '.state=="verified" and .verified_sha256==$sha and .validation_attempts==2 and .ticket_attempts==1 and .failure_phase=="" and .failure_class==""' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+  [[ $(grep -c '^staple$' "$MOCK_STATE/tickets") == 1 && $(wc -l < "$MOCK_STATE/submits" | tr -d ' ') == 1 && $(grep -c -- --force "$MOCK_STATE/codesigns") == 2 ]]
+  assert_private
+  echo 'PASS: verified restore yields safely on diagnosed validation failure and recovers exact bytes without restapling/signing/upload'
+}
+verified_recovery_repro
+[[ ${SIGN_MACOS_TEST_GROUP:-all} != verified-recovery ]] || exit 0
+ticket_recovery_contracts() {
+  local message expected seed original pin queries signs imports staples case_id stage parent snapshot
+  while IFS='|' read -r message expected; do
+    printf '%s\n' "$message" > "$TEST_WORK/ticket-diagnostic"
+    [[ $(macos_ticket_failure_class "$TEST_WORK/ticket-diagnostic" 68) == "$expected" ]]
+    [[ $(macos_ticket_failure_class "$TEST_WORK/ticket-diagnostic" 1) == unclassified ]]
+  done <<'CASES'
+CloudKit network connection lost|cloudkit-transport
+CloudKit connection reset|cloudkit-transport
+CloudKit connection timed out|cloudkit-transport
+CloudKit service unavailable|cloudkit-transport
+connection lost|unclassified
+CloudKit query failed due to (null)|unclassified
+CloudKit network connection lost fixture-p12-password|unclassified
+68|unclassified
+CASES
+  printf 'CloudKit network connection lost\nInvalid signature\n' > "$TEST_WORK/ticket-diagnostic"
+  [[ $(macos_ticket_failure_class "$TEST_WORK/ticket-diagnostic" 68) == unclassified ]]
+  echo 'PASS: ticket classification uses safe allowlisted constants; exit 68, generic transport and contradictory diagnostics are terminal'
+
+  # Generate the actual verified -> terminal seam, then remove only extension
+  # fields to reproduce the legacy schema-2 receipt shape. No real metadata used.
+  new_case success legacy-blocked
+  TARGET="$MOCK_STATE/takedown.app"
+  run_signer
+  MOCK_SCENARIO=validation-failure
+  if run_signer; then exit 1; fi
+  jq -e '.state=="ticket-blocked" and .failure_class=="unclassified" and .validation_attempts==1 and .verified_sha256!=""' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+  jq 'del(.failure_class,.validation_attempts,.requalification_parent_sha256)' "$NOTARY_EVIDENCE_DIR/app/receipt.json" > "$MOCK_STATE/legacy.json"
+  cp "$MOCK_STATE/legacy.json" "$NOTARY_EVIDENCE_DIR/app/receipt.json"
+  seed="$MOCK_STATE/blocked-seed"
+  cp -R "$NOTARY_EVIDENCE_DIR" "$seed"
+  original="$MOCK_STATE/legacy.json"
+  queries=$(wc -l < "$MOCK_STATE/queries")
+  signs=$(grep -c -- --force "$MOCK_STATE/codesigns")
+  imports=$(wc -l < "$MOCK_STATE/private-commands")
+  staples=$(grep -c '^staple$' "$MOCK_STATE/tickets")
+  pin=$(shasum -a 256 "$original" | awk '{print $1}')
+  MOCK_SCENARIO=success
+  if run_signer; then echo 'unapproved terminal receipt reopened' >&2; exit 1; fi
+  cmp "$original" "$NOTARY_EVIDENCE_DIR/app/receipt.json"
+  [[ $(wc -l < "$MOCK_STATE/queries") == "$queries" ]]
+  export NOTARY_REQUALIFY_RECEIPT_SHA256
+  for case_id in wrong-pin malformed-pin source run attempt arch stage filename version uuid missing-verified symlink-verified verified-digest submitted-digest non-validation non-68 classified rejected diagnostic missing-log exhausted-ticket exhausted-validation zero-budget parent; do
+    NOTARY_EVIDENCE_DIR="$MOCK_STATE/refuse-$case_id"
+    cp -R "$seed" "$NOTARY_EVIDENCE_DIR"
+    case $case_id in
+      source) message='.source_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' ;;
+      run) message='.ci_run_id="999"' ;;
+      attempt) message='.ci_run_attempt="2"' ;;
+      arch) message='.architecture="amd64"' ;;
+      stage) message='.stage="dmg"' ;;
+      filename) message='.filename="wrong.zip"' ;;
+      version) message='.version="0.0.2"' ;;
+      uuid) message='.submission_id="bad"' ;;
+      non-validation) message='.failure_phase="gatekeeper"' ;;
+      non-68) message='.failure_exit="1"' ;;
+      classified) message='.failure_class="cloudkit-transport"' ;;
+      exhausted-ticket) message='.ticket_attempts=3' ;;
+      exhausted-validation) message='.validation_attempts=3' ;;
+      zero-budget) message='.validation_attempts=0' ;;
+      parent) message='.requalification_parent_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' ;;
+      *) message='.' ;;
+    esac
+    jq "$message" "$NOTARY_EVIDENCE_DIR/app/receipt.json" > "$MOCK_STATE/mutated.json"
+    mv "$MOCK_STATE/mutated.json" "$NOTARY_EVIDENCE_DIR/app/receipt.json"
+    NOTARY_REQUALIFY_RECEIPT_SHA256=$(shasum -a 256 "$NOTARY_EVIDENCE_DIR/app/receipt.json" | awk '{print $1}')
+    case $case_id in
+      wrong-pin) NOTARY_REQUALIFY_RECEIPT_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+      malformed-pin) NOTARY_REQUALIFY_RECEIPT_SHA256=not-a-digest ;;
+      missing-verified) rm "$NOTARY_EVIDENCE_DIR/app/stapled-app.zip" ;;
+      symlink-verified) rm "$NOTARY_EVIDENCE_DIR/app/stapled-app.zip"; ln -s "$seed/app/stapled-app.zip" "$NOTARY_EVIDENCE_DIR/app/stapled-app.zip" ;;
+      verified-digest) printf 'corrupt\n' >> "$NOTARY_EVIDENCE_DIR/app/stapled-app.zip" ;;
+      submitted-digest) printf 'corrupt\n' >> "$NOTARY_EVIDENCE_DIR/app/$(jq -r .filename "$original")" ;;
+      rejected|diagnostic)
+        message='.status="Rejected"'; [[ $case_id != diagnostic ]] || message='.sha256="wrong"'
+        jq "$message" "$NOTARY_EVIDENCE_DIR/app/apple-log.json" > "$MOCK_STATE/log.json"
+        mv "$MOCK_STATE/log.json" "$NOTARY_EVIDENCE_DIR/app/apple-log.json" ;;
+      missing-log) rm "$NOTARY_EVIDENCE_DIR/app/apple-log.json" ;;
+    esac
+    cp "$NOTARY_EVIDENCE_DIR/app/receipt.json" "$MOCK_STATE/before.json"
+    if run_signer; then echo "unsafe requalification: $case_id" >&2; exit 1; fi
+    cmp "$MOCK_STATE/before.json" "$NOTARY_EVIDENCE_DIR/app/receipt.json"
+    [[ $(wc -l < "$MOCK_STATE/queries") == "$queries" && ! -d $NOTARY_EVIDENCE_DIR/app/.lock ]]
+    assert_private
+  done
+  echo 'PASS: legacy terminal receipt remains byte-identical without exact approval; 24 pin/identity/bytes/phase/Accepted-log/budget refusals make no provider query'
+  NOTARY_EVIDENCE_DIR="$MOCK_STATE/pinned-success"
+  cp -R "$seed" "$NOTARY_EVIDENCE_DIR"
+  NOTARY_REQUALIFY_RECEIPT_SHA256=$pin
+  run_signer
+  jq -e --arg pin "$pin" '.state=="verified" and .requalification_parent_sha256==$pin and .validation_attempts==2 and .ticket_attempts==1 and .failure_class==""' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+  parent="$NOTARY_EVIDENCE_DIR/app/blocked-receipt-$pin.json"
+  cmp "$original" "$parent"
+  cmp "$seed/app/stapled-app.zip" "$NOTARY_EVIDENCE_DIR/app/stapled-app.zip"
+  [[ $(grep -c '^staple$' "$MOCK_STATE/tickets") == "$staples" && $(grep -c -- --force "$MOCK_STATE/codesigns") == "$signs" && $(wc -l < "$MOCK_STATE/private-commands") == "$imports" && $(wc -l < "$MOCK_STATE/submits" | tr -d ' ') == 1 ]]
+  # A later normal recheck spends no new recovery budget, even with the pin unset.
+  unset NOTARY_REQUALIFY_RECEIPT_SHA256
+  run_signer
+  jq -e '.validation_attempts==2 and .state=="verified"' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+  queries=$(wc -l < "$MOCK_STATE/queries")
+  snapshot="$MOCK_STATE/verified.json"
+  cp "$NOTARY_EVIDENCE_DIR/app/receipt.json" "$snapshot"
+  printf 'tampered\n' >> "$parent"
+  if run_signer; then echo 'tampered parent reused' >&2; exit 1; fi
+  cmp "$snapshot" "$NOTARY_EVIDENCE_DIR/app/receipt.json"
+  [[ $(wc -l < "$MOCK_STATE/queries") == "$queries" ]]
+  assert_private
+  echo 'PASS: exact pin preserves terminal parent, UUID, archives and counters; subsequent rechecks audit the parent without restaple, signing, key import or submit'
+
+  for case_id in validation-transient gatekeeper-failure signature-failure log-hash-mismatch rejected private-cleanup-failure validation-mutate-archive; do
+    NOTARY_EVIDENCE_DIR="$MOCK_STATE/pinned-$case_id"
+    cp -R "$seed" "$NOTARY_EVIDENCE_DIR"
+    export NOTARY_REQUALIFY_RECEIPT_SHA256=$pin
+    MOCK_SCENARIO=$case_id
+    result=0; run_signer || result=$?
+    [[ $result != 0 ]]
+    cmp "$original" "$NOTARY_EVIDENCE_DIR/app/blocked-receipt-$pin.json"
+    jq -e --arg pin "$pin" '.state!="verified" and .requalification_parent_sha256==$pin and .validation_attempts==2' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+    if [[ $case_id == validation-transient ]]; then
+      [[ $result == 75 ]]
+      MOCK_SCENARIO=success
+      run_signer
+      jq -e '.state=="verified" and .validation_attempts==3' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+    else
+      queries=$(wc -l < "$MOCK_STATE/queries")
+      NOTARY_REQUALIFY_RECEIPT_SHA256=$(shasum -a 256 "$NOTARY_EVIDENCE_DIR/app/receipt.json" | awk '{print $1}')
+      MOCK_SCENARIO=success
+      if run_signer; then echo "terminal second pin bypassed: $case_id" >&2; exit 1; fi
+      [[ $(wc -l < "$MOCK_STATE/queries") == "$queries" ]]
+    fi
+    assert_private
+  done
+  unset NOTARY_REQUALIFY_RECEIPT_SHA256
+  echo 'PASS: pinned recovery still requires full Accepted diagnostics, signatures, ticket, Gatekeeper, cleanup and exact verified digest; a second pin cannot reset it'
+
+  cat > "$TEST_WORK/requalification-checkpoint.sh" <<'HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+state=$(jq -r .state "$1/app/receipt.json")
+if [[ $state == "$MOCK_FAIL_RECOVERY_CHECKPOINT" ]]; then exit 88; fi
+HOOK
+  export MOCK_FAIL_RECOVERY_CHECKPOINT NOTARY_CHECKPOINT_HOOK NOTARY_REQUALIFY_RECEIPT_SHA256=$pin
+  NOTARY_CHECKPOINT_HOOK="$TEST_WORK/requalification-checkpoint.sh"
+  for case_id in ticket-blocked validation-pending; do
+    NOTARY_EVIDENCE_DIR="$MOCK_STATE/interrupted-$case_id"
+    cp -R "$seed" "$NOTARY_EVIDENCE_DIR"
+    MOCK_FAIL_RECOVERY_CHECKPOINT=$case_id MOCK_SCENARIO=success
+    queries=$(wc -l < "$MOCK_STATE/queries")
+    if run_signer; then echo 'failed pin checkpoint passed' >&2; exit 1; fi
+    [[ $(wc -l < "$MOCK_STATE/queries") == "$queries" ]]
+    cmp "$original" "$NOTARY_EVIDENCE_DIR/app/blocked-receipt-$pin.json"
+    if [[ $case_id == ticket-blocked ]]; then
+      cmp "$original" "$NOTARY_EVIDENCE_DIR/app/receipt.json"
+    else
+      jq -e '.state=="validation-pending" and .validation_attempts==2' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+    fi
+    MOCK_FAIL_RECOVERY_CHECKPOINT=never
+    run_signer
+    jq -e '.state=="verified" and .validation_attempts>=2 and .validation_attempts<=3' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+    assert_private
+  done
+  unset MOCK_FAIL_RECOVERY_CHECKPOINT NOTARY_CHECKPOINT_HOOK NOTARY_REQUALIFY_RECEIPT_SHA256
+  echo 'PASS: parent/pending checkpoint failures stop before provider operations and restart without losing original failure or resetting reserved attempts'
+
+  for stage in app dmg; do
+    new_case success "verified-budget-$stage"
+    TARGET="$MOCK_STATE/takedown.$stage"
+    run_signer
+    MOCK_SCENARIO=validation-transient
+    for attempt in 1 2 3; do
+      result=0; run_signer || result=$?
+      if [[ $attempt -lt 3 ]]; then [[ $result == 75 ]]; else [[ $result == 1 ]]; fi
+      jq -e --argjson count "$attempt" '.validation_attempts==$count and .ticket_attempts==1' "$NOTARY_EVIDENCE_DIR/$stage/receipt.json" >/dev/null
+    done
+    jq -e '.state=="ticket-blocked" and .failure_class=="cloudkit-transport"' "$NOTARY_EVIDENCE_DIR/$stage/receipt.json" >/dev/null
+    queries=$(wc -l < "$MOCK_STATE/queries")
+    if run_signer; then exit 1; fi
+    [[ $(wc -l < "$MOCK_STATE/queries") == "$queries" && $(grep -c '^staple$' "$MOCK_STATE/tickets") == 1 && $(wc -l < "$MOCK_STATE/submits" | tr -d ' ') == 1 ]]
+    assert_private
+  done
+  echo 'PASS: app and DMG validation recovery budgets persist across restarts and terminal exhaustion never becomes verified'
+}
+ticket_recovery_contracts
+[[ ${SIGN_MACOS_TEST_GROUP:-all} != ticket-recovery ]] || exit 0
 for stage in app dmg; do
   new_case success "$stage"
   run_signer
@@ -507,7 +717,7 @@ MOCK
 chmod +x "$TEST_WORK/tools/go" "$TEST_WORK/tools/hdiutil" "$TEST_WORK/tools/xattr"
 FIXTURE_ROOT="$TEST_WORK/package-project"
 mkdir -p "$FIXTURE_ROOT/scripts" "$FIXTURE_ROOT/assets" "$FIXTURE_ROOT/build/macos"
-cp "$ROOT/scripts/package-common.sh" "$ROOT/scripts/package-macos.sh" "$ROOT/scripts/sign-macos.sh" "$ROOT/scripts/keychain-lifecycle.sh" "$ROOT/scripts/macos-certificate-import.sh" "$FIXTURE_ROOT/scripts/"
+cp "$ROOT/scripts/package-common.sh" "$ROOT/scripts/package-macos.sh" "$ROOT/scripts/sign-macos.sh" "$ROOT/scripts/keychain-lifecycle.sh" "$ROOT/scripts/macos-certificate-import.sh" "$ROOT/scripts/macos-ticket-policy.sh" "$FIXTURE_ROOT/scripts/"
 cp "$ROOT/build/macos/Info.plist" "$FIXTURE_ROOT/build/macos/"
 printf 'fixture icon\n' > "$FIXTURE_ROOT/assets/icon.icns"
 for file in README.md PRIVACY.md PRIVACY.html LICENSE NOTICE THIRD_PARTY_NOTICES.md; do

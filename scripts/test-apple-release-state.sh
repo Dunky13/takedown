@@ -24,11 +24,16 @@ chmod +x "$TEST_WORK/bin/gh"
 export PATH="$TEST_WORK/bin:$PATH"
 jq -n --arg source "$NOTARY_SOURCE_SHA" --arg version "$RELEASE_VERSION" --arg repo "$GH_REPO" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" '{schema:1,source:$source,version:$version,repository:$repo,run_id:$run,run_attempt:$attempt}' > "$MOCK_REMOTE/candidate.json"
 printf '{"synthetic":true}\n' > "$TEST_WORK/evidence/input.json"
+mkdir "$TEST_WORK/evidence/app"
+printf '{"synthetic":"immutable original terminal receipt"}\n' > "$TEST_WORK/parent.json"
+parent_sha=$(shasum -a 256 "$TEST_WORK/parent.json" | awk '{print $1}')
+cp "$TEST_WORK/parent.json" "$TEST_WORK/evidence/app/blocked-receipt-$parent_sha.json"
 state() { bash "$ROOT/scripts/apple-release-state.sh" "$@" > "$TEST_WORK/log" 2>&1; }
 reject() { if state "$@"; then echo 'expected custody failure' >&2; exit 1; fi; }
 state save "$TEST_WORK/evidence"
 state restore "$TEST_WORK/restored"
 cmp "$TEST_WORK/evidence/input.json" "$TEST_WORK/restored/input.json"
+cmp "$TEST_WORK/parent.json" "$TEST_WORK/restored/app/blocked-receipt-$parent_sha.json"
 printf '{"synthetic":true,"stage":"prepared"}\n' > "$TEST_WORK/evidence/input.json"
 state save "$TEST_WORK/evidence"
 state restore "$TEST_WORK/restored-new"

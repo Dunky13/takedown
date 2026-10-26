@@ -4,7 +4,8 @@ ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 export NOTARY_CHECKPOINT_HOOK="$ROOT/scripts/apple-checkpoint.sh"
 status=0
 packages="$ROOT/dist/packages/darwin-$NOTARY_ARCH-release"
-if [[ -f $NOTARY_EVIDENCE_DIR/acceptance.json && -f $NOTARY_EVIDENCE_DIR/final/SHA256SUMS ]]; then
+if [[ -f $NOTARY_EVIDENCE_DIR/acceptance.json && -f $NOTARY_EVIDENCE_DIR/final/SHA256SUMS ]] &&
+  bash "$ROOT/scripts/apple-stages-verified.sh" "$NOTARY_EVIDENCE_DIR"; then
   # Successful architectures retain their final ZIP bytes across continuations,
   # including a publication retry. Repacking must never mutate a reserved asset.
   mkdir -p "$packages"
