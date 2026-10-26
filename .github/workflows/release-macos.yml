@@ -12,6 +12,23 @@ on:
       release_version:
         required: true
         type: string
+    # Callers must pass these names even when their values live only in the
+    # protected environment below. Environment values take precedence.
+    secrets:
+      MACOS_CERTIFICATE_P12_BASE64:
+        required: true
+      MACOS_CERTIFICATE_PASSWORD:
+        required: true
+      MACOS_SIGN_IDENTITY:
+        required: true
+      APPLE_TEAM_ID:
+        required: true
+      APPLE_API_KEY_BASE64:
+        required: true
+      APPLE_API_KEY_ID:
+        required: true
+      APPLE_API_ISSUER:
+        required: true
 
 permissions:
   contents: read

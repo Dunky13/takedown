@@ -147,6 +147,14 @@ submission, or repository-settings change was performed during implementation.
    `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER` as environment
    secrets. `MACOS_SIGN_IDENTITY` must be the matching Developer ID Application
    identity. Use private credential entry, not workflow input fields.
+   The caller explicitly forwards these seven secret names to the reusable
+   macOS workflow, which declares each name as required. GitHub resolves the
+   environment values only after its approval gate. Declaring `environment`
+   in the called workflow alone leaves secrets empty; see
+   [GitHub's reusable workflow secret guidance](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow).
+   Required declarations catch missing caller mappings, while the signing
+   script separately rejects empty values. Native CI and scheduled nightlies
+   receive none of these secrets.
 3. Allow the publisher's declared `contents: write` permission. Tag rules must
    permit this workflow to create new `v*` tags while preserving existing tags.
    No personal access token is required by this implementation.
