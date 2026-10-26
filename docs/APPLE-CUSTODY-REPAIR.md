@@ -85,6 +85,16 @@ ShellCheck passed for all 12 changed/new shell files. `bash -n` passed for the
 same files. Actionlint passed for `ci.yml`, `release.yml` and `release-macos.yml`.
 `git diff --check` passed. These are local results only.
 
+## Hosted checkout regression
+
+PR native run `40380769439` failed in Linux job `121776044777` because the
+recovery fixture used `HEAD^` while native checkout retained only one commit.
+A depth-one checkout reproduced exit `128` and the exact missing-parent error.
+Native CI now fetches two commits. Both unchanged custody-recovery and planning
+suites pass in a real checkout that remains shallow and contains exactly two
+commits. Actionlint and diff checks also pass. No test or release gate was removed;
+hosted CI must qualify the updated PR head again.
+
 ## Changed paths
 
 - Custody: `scripts/apple-release-state.sh`, `scripts/prepare-apple-release.sh`.
