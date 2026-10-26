@@ -71,9 +71,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $gcc = 'C:/msys64/mingw64/bin'
+          $gcc = 'C:/mingw64/bin'
           if (-not (Test-Path "$gcc/gcc.exe")) { throw 'MinGW-w64 gcc is missing' }
           $gcc | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CC=$gcc/gcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           choco install nsis --version=3.11 --yes --no-progress --limit-output
           if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
           'C:/Program Files (x86)/NSIS' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append

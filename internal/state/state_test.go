@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,7 @@ func TestVersionTwoMigratesAndCompletionDigestPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer s.Close()
 	r, ok := s.Get(r.Part.Key())
 	if !ok || r.SHA256 != "" || !r.Complete {
 		t.Fatalf("legacy record changed: %+v", r)
@@ -78,6 +80,7 @@ func TestStateRoundTripLockAndSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer s.Close()
 	if _, err = Open(path); !errors.Is(err, ErrLocked) {
 		t.Fatalf("second open: %v", err)
 	}
@@ -91,7 +94,12 @@ func TestStateRoundTripLockAndSecrets(t *testing.T) {
 	if bytes.Contains(data, []byte("SIGNED")) || bytes.Contains(data, []byte("https://")) {
 		t.Fatalf("link leaked: %s", data)
 	}
-	if info, _ := os.Stat(path); info.Mode().Perm()&0077 != 0 {
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unix permission bits do not describe Windows ACLs.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("state permissions: %v", info.Mode())
 	}
 	if err = s.Close(); err != nil {

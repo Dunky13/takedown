@@ -26,15 +26,18 @@ On macOS, install the Xcode command line tools (`xcode-select --install`). On
 Windows, use a supported MinGW-w64 C compiler on `PATH`. On Debian/Ubuntu Linux:
 
 ```sh
-sudo apt-get install build-essential pkg-config libgl1-mesa-dev xorg-dev libxkbcommon-dev
+sudo apt-get install build-essential pkg-config libgl1-mesa-dev libegl-dev xorg-dev libwayland-dev libxkbcommon-dev
 ```
 
-On Fedora, install `gcc`, `pkgconf-pkg-config`, `mesa-libGL-devel`,
+On Fedora, install `gcc`, `pkgconf-pkg-config`, `mesa-libGL-devel`, `mesa-libEGL-devel`,
 `libXcursor-devel`, `libXrandr-devel`, `libXinerama-devel`, `libXi-devel`,
-`libXxf86vm-devel`, and `libxkbcommon-devel`. On Arch, install `base-devel`,
-`pkgconf`, `mesa`, `libxcursor`, `libxrandr`, `libxinerama`, `libxi`,
-`libxxf86vm`, and `libxkbcommon`. These are OpenGL/X11 dependencies;
-Fyne does not use WebKit2GTK. See [Fyne's build requirements](https://docs.fyne.io/started/).
+`libXxf86vm-devel`, `wayland-devel`, and `libxkbcommon-devel`. On Arch, install
+`base-devel`, `pkgconf`, `mesa`, `libglvnd`, `libxcursor`, `libxrandr`, `libxinerama`,
+`libxi`, `libxxf86vm`, `wayland`, and `libxkbcommon`. These supply OpenGL/EGL and
+both X11 and Wayland development files. The pinned GLFW module enables both Linux
+backends by default. Fyne does not use WebKit2GTK. See
+[GLFW's X11 and Wayland requirements](https://www.glfw.org/docs/3.4/compile.html#compile_deps)
+and [Fyne's build requirements](https://docs.fyne.io/started/).
 
 For a server without native graphics libraries, `make headless` produces the
 optional `bin/takedown-cli` binary. The default build supports both interfaces.

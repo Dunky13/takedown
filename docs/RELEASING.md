@@ -25,7 +25,7 @@ do not silently download tools or substitute a headless build.
 | Host | Requirements |
 | --- | --- |
 | macOS arm64/amd64 | Go 1.26.10, Apple C compiler + SDK, Bash, `plutil`, `ditto`, `xattr`, `shasum`, `hdiutil`. Signing additionally needs `security`, `codesign`, `openssl`, and Xcode's `notarytool`/`stapler` through `xcrun`. |
-| Linux arm64/amd64 | Go 1.26.10, GCC, pkg-config, GNU tar, coreutils (`link`, sha256sum), gzip, Bash, X11/OpenGL headers. Ubuntu 24.04 graphics/build packages: `gcc pkg-config libgl1-mesa-dev xorg-dev libxkbcommon-dev libdbus-1-dev`. A graphical session and distro runtime libraries are needed to launch the GUI; the OS keyring needs a working session service. |
+| Linux arm64/amd64 | Go 1.26.10, GCC, pkg-config, GNU tar, coreutils (`link`, sha256sum), gzip, Bash, X11/Wayland and OpenGL/EGL development files. The pinned GLFW module enables both Linux backends by default. Ubuntu 24.04 graphics/build packages: `gcc pkg-config libgl1-mesa-dev libegl-dev xorg-dev libwayland-dev libxkbcommon-dev libdbus-1-dev`. A graphical session and distro runtime libraries are needed to launch the GUI; the OS keyring needs a working session service. |
 | Windows amd64 | Go 1.26.10, PowerShell 7 (`pwsh`), native MinGW-w64 GCC on PATH, Unicode NSIS 3.x (`makensis.exe`; CI pins Chocolatey NSIS 3.11). Signing additionally requires Windows SDK `signtool.exe` on PATH. |
 
 CI uses `ubuntu-24.04`, `macos-15`, and `windows-2025`. The Windows runner must

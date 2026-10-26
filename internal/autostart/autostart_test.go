@@ -14,7 +14,15 @@ import (
 func TestLoginDefinitionsKeepArgumentsAndUserBoundary(t *testing.T) {
 	for _, platform := range []string{"darwin", "linux", "windows"} {
 		t.Run(platform, func(t *testing.T) {
-			o := Options{Platform: platform, Home: "/private/user home", ConfigHome: "/private/user home/.config", Executable: "/private/app $special%/takedown", DataDir: "/private/data & <profiles>", UID: "501", User: "DOMAIN\\operator", PartByPart: true}
+			root := t.TempDir()
+			o := Options{
+				Platform:   platform,
+				Home:       filepath.Join(root, "user home"),
+				ConfigHome: filepath.Join(root, "user home", ".config"),
+				Executable: filepath.Join(root, "app $special%", "takedown"),
+				DataDir:    filepath.Join(root, "data & <profiles>"),
+				UID:        "501", User: "DOMAIN\\operator", PartByPart: true,
+			}
 			d, err := Build(o)
 			if err != nil {
 				t.Fatal(err)
@@ -48,6 +56,36 @@ func TestLoginDefinitionsKeepArgumentsAndUserBoundary(t *testing.T) {
 	}
 }
 
+func TestNativeDefinitionsRejectRelativePaths(t *testing.T) {
+	root := t.TempDir()
+	valid := Options{Home: root, Executable: filepath.Join(root, "takedown"), DataDir: filepath.Join(root, "data"), UID: "501", User: "DOMAIN\\operator"}
+	if _, err := Build(valid); err != nil {
+		t.Fatalf("native absolute paths rejected: %v", err)
+	}
+	paths := []string{"relative/path"}
+	if runtime.GOOS == "windows" {
+		paths = append(paths, "/private/path", `C:relative\path`, `\rooted\path`)
+	}
+	for _, field := range []string{"home", "executable", "data-dir"} {
+		for _, path := range paths {
+			t.Run(field+"/"+path, func(t *testing.T) {
+				o := valid
+				switch field {
+				case "home":
+					o.Home = path
+				case "executable":
+					o.Executable = path
+				case "data-dir":
+					o.DataDir = path
+				}
+				if _, err := Build(o); err == nil || !strings.Contains(err.Error(), "absolute runtime paths") {
+					t.Fatalf("native non-absolute path must be rejected: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestNativePlistParsesAndNoInstallOccurs(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Apple's native plist validator is Darwin-only; XML is checked on all hosts")
@@ -73,12 +111,13 @@ func TestNativePlistParsesAndNoInstallOccurs(t *testing.T) {
 }
 
 func TestRejectControlCharactersAndIsolateProfiles(t *testing.T) {
-	o := Options{Platform: "linux", Home: "/private/operator", Executable: "/opt/takedown", DataDir: "/private/profile-a"}
+	root := t.TempDir()
+	o := Options{Platform: "linux", Home: filepath.Join(root, "operator"), Executable: filepath.Join(root, "takedown"), DataDir: filepath.Join(root, "profile-a")}
 	a, err := Build(o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	o.DataDir = "/private/profile-b"
+	o.DataDir = filepath.Join(root, "profile-b")
 	b, err := Build(o)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +125,7 @@ func TestRejectControlCharactersAndIsolateProfiles(t *testing.T) {
 	if a.Name == b.Name || a.Path == b.Path {
 		t.Fatal("different profiles share a login task")
 	}
-	o.DataDir = "/private/profile\nExecStart=/other"
+	o.DataDir = filepath.Join(root, "profile\nExecStart=/other")
 	if _, err = Build(o); err == nil {
 		t.Fatal("control-character injection accepted")
 	}

@@ -30,7 +30,7 @@ do not silently download tools or substitute a headless build.</p>
 </tr>
 <tr>
 <td>Linux arm64/amd64</td>
-<td>Go 1.26.10, GCC, pkg-config, GNU tar, coreutils (<code>link</code>, sha256sum), gzip, Bash, X11/OpenGL headers. Ubuntu 24.04 graphics/build packages: <code>gcc pkg-config libgl1-mesa-dev xorg-dev libxkbcommon-dev libdbus-1-dev</code>. A graphical session and distro runtime libraries are needed to launch the GUI; the OS keyring needs a working session service.</td>
+<td>Go 1.26.10, GCC, pkg-config, GNU tar, coreutils (<code>link</code>, sha256sum), gzip, Bash, X11/Wayland and OpenGL/EGL development files. The pinned GLFW module enables both Linux backends by default. Ubuntu 24.04 graphics/build packages: <code>gcc pkg-config libgl1-mesa-dev libegl-dev xorg-dev libwayland-dev libxkbcommon-dev libdbus-1-dev</code>. A graphical session and distro runtime libraries are needed to launch the GUI; the OS keyring needs a working session service.</td>
 </tr>
 <tr>
 <td>Windows amd64</td>
