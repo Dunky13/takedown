@@ -1,0 +1,66 @@
+name: Icon byte diagnostics
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/icon-byte-diagnostics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Compare pinned Linux raster paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CGO_ENABLED: '0'
+      GOMAXPROCS: '2'
+      GOFLAGS: -mod=readonly
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.10'
+          check-latest: false
+          cache: false
+      - name: Preserve committed, default and generic raster outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostic="$RUNNER_TEMP/icon-byte-diagnostics"
+          mkdir "$diagnostic"
+          go env -json GOOS GOARCH GOVERSION GOAMD64 GOEXPERIMENT > "$diagnostic/go-env.json"
+          git rev-parse HEAD > "$diagnostic/source-revision.txt"
+          cp assets/generate.go go.mod go.sum "$diagnostic/"
+          snapshot() {
+            local target="$diagnostic/$1"
+            mkdir -p "$target/assets/sizes" "$target/cmd/takedown"
+            cp assets/icon.svg assets/icon.png assets/icon.ico assets/icon.icns "$target/assets/"
+            cp assets/sizes/*.png "$target/assets/sizes/"
+            cp cmd/takedown/icon_windows_amd64.syso "$target/cmd/takedown/"
+            (cd "$target"; find assets cmd -type f -exec sha256sum {} + | sort) > "$target/SHA256SUMS"
+          }
+          snapshot committed
+          go run -mod=readonly -p 2 -gcflags=all=-d=fmahash=n ./assets/generate.go
+          snapshot default
+          go run -mod=readonly -p 2 -tags=noasm -gcflags=all=-d=fmahash=n ./assets/generate.go
+          snapshot noasm
+          if diff -r "$diagnostic/committed" "$diagnostic/default" > "$diagnostic/default-comparison.txt"; then
+            echo 'Default raster output matches committed assets'
+          else
+            echo 'Default raster output differs; original comparison retained'
+          fi
+          diff -r "$diagnostic/committed" "$diagnostic/noasm" > "$diagnostic/noasm-comparison.txt"
+      - name: Retain numeric comparison evidence only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: icon-byte-diagnostics-${{ github.sha }}
+          path: ${{ runner.temp }}/icon-byte-diagnostics
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
