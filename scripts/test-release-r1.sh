@@ -18,6 +18,7 @@ FIXTURE="$WORK/payload"
 mkdir -p "$FIXTURE/bin" "$FIXTURE/share/applications" "$FIXTURE/share/icons/hicolor/scalable/apps" "$FIXTURE/share/doc/takedown"
 printf '#!/bin/sh\nexit 0\n' > "$FIXTURE/bin/takedown"
 printf 'fixture docs\n' > "$FIXTURE/share/doc/takedown/README.md"
+printf 'fixture application license\n' > "$FIXTURE/share/doc/takedown/LICENSE"
 printf 'fixture application notice\n' > "$FIXTURE/share/doc/takedown/NOTICE"
 printf 'fixture dependency notices\n' > "$FIXTURE/share/doc/takedown/THIRD_PARTY_NOTICES.md"
 cp assets/icon.svg "$FIXTURE/share/icons/hicolor/scalable/apps/takedown.svg"
@@ -61,11 +62,15 @@ printf 'modified docs\n' > "$PREFIX/share/doc/takedown/README.md"
 expect_failure 'owned file changed' env INSTALL_PREFIX="$PREFIX" bash "$FIXTURE/uninstall-user.sh"
 [[ -f $PREFIX/bin/takedown && -f $PREFIX/share/takedown/install-manifest.sha256 ]]
 cp "$FIXTURE/share/doc/takedown/README.md" "$PREFIX/share/doc/takedown/README.md"
-for name in NOTICE THIRD_PARTY_NOTICES.md; do
+cp "$PREFIX/share/takedown/install-manifest.sha256" "$WORK/legal-files-manifest"
+for name in LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
   cmp "$FIXTURE/share/doc/takedown/$name" "$PREFIX/share/doc/takedown/$name"
-  printf 'modified notice\n' > "$PREFIX/share/doc/takedown/$name"
+  grep -Eq "^[0-9a-f]{64}  share/doc/takedown/$name$" "$PREFIX/share/takedown/install-manifest.sha256"
+  printf 'modified legal file\n' > "$PREFIX/share/doc/takedown/$name"
   expect_failure 'owned file changed' env INSTALL_PREFIX="$PREFIX" bash "$FIXTURE/uninstall-user.sh"
   [[ -f $PREFIX/bin/takedown && -f $PREFIX/share/takedown/install-manifest.sha256 ]]
+  grep -Fxq 'modified legal file' "$PREFIX/share/doc/takedown/$name"
+  cmp "$WORK/legal-files-manifest" "$PREFIX/share/takedown/install-manifest.sha256"
   cp "$FIXTURE/share/doc/takedown/$name" "$PREFIX/share/doc/takedown/$name"
 done
 cp "$PREFIX/share/takedown/install-manifest.sha256" "$WORK/good-manifest"
@@ -85,11 +90,11 @@ rm "$PREFIX/share/applications/takedown.desktop"
 mv "$WORK/owned-desktop" "$PREFIX/share/applications/takedown.desktop"
 INSTALL_PREFIX="$PREFIX" bash "$FIXTURE/uninstall-user.sh"
 [[ ! -e $PREFIX/bin/takedown && ! -e $PREFIX/share/takedown/install-manifest.sha256 ]]
-[[ ! -e $PREFIX/share/doc/takedown/NOTICE && ! -e $PREFIX/share/doc/takedown/THIRD_PARTY_NOTICES.md ]]
+[[ ! -e $PREFIX/share/doc/takedown/LICENSE && ! -e $PREFIX/share/doc/takedown/NOTICE && ! -e $PREFIX/share/doc/takedown/THIRD_PARTY_NOTICES.md ]]
 cmp "$WORK/sentinel" "$PREFIX/share/doc/takedown/local-notes.txt"
-for name in NOTICE THIRD_PARTY_NOTICES.md; do
+for name in LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
   mv "$FIXTURE/share/doc/takedown/$name" "$WORK/held-notice"
-  expect_failure 'missing package payload' env INSTALL_PREFIX="$WORK/missing-notice-prefix" bash "$FIXTURE/install-user.sh"
+  expect_failure "missing package payload: share/doc/takedown/$name" env INSTALL_PREFIX="$WORK/missing-notice-prefix" bash "$FIXTURE/install-user.sh"
   [[ ! -e $WORK/missing-notice-prefix ]]
   ln -s "$WORK/held-notice" "$FIXTURE/share/doc/takedown/$name"
   expect_failure 'symlink payload path' env INSTALL_PREFIX="$WORK/missing-notice-prefix" bash "$FIXTURE/install-user.sh"

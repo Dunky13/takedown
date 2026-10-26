@@ -32,12 +32,13 @@ printf '#!/bin/sh\nexit 0\n' > "$FIXTURE/bin/takedown"
 cp build/linux/takedown.desktop "$FIXTURE/share/applications/"
 cp assets/icon.svg "$FIXTURE/share/icons/hicolor/scalable/apps/takedown.svg"
 printf 'test docs\n' > "$FIXTURE/share/doc/takedown/README.md"
+printf 'fixture application license\n' > "$FIXTURE/share/doc/takedown/LICENSE"
 printf 'fixture application notice\n' > "$FIXTURE/share/doc/takedown/NOTICE"
 printf 'fixture dependency notices\n' > "$FIXTURE/share/doc/takedown/THIRD_PARTY_NOTICES.md"
 cp build/linux/install-user.sh build/linux/uninstall-user.sh build/linux/install-common.sh "$FIXTURE/"
 INSTALL_PREFIX="$PREFIX" bash "$FIXTURE/install-user.sh"
 [[ -x $PREFIX/bin/takedown && -f $PREFIX/share/doc/takedown/README.md ]]
-for name in NOTICE THIRD_PARTY_NOTICES.md; do
+for name in LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
   cmp "$FIXTURE/share/doc/takedown/$name" "$PREFIX/share/doc/takedown/$name"
   grep -Eq "^[0-9a-f]{64}  share/doc/takedown/$name$" "$PREFIX/share/takedown/install-manifest.sha256"
 done
@@ -45,7 +46,7 @@ grep -Fxq "Exec=\"$PREFIX/bin/takedown\" gui" "$PREFIX/share/applications/takedo
 printf 'retain me\n' > "$PREFIX/user-state"
 INSTALL_PREFIX="$PREFIX" bash build/linux/uninstall-user.sh
 [[ ! -e $PREFIX/bin/takedown && ! -e $PREFIX/share/applications/takedown.desktop && -f $PREFIX/user-state ]]
-[[ ! -e $PREFIX/share/doc/takedown/NOTICE && ! -e $PREFIX/share/doc/takedown/THIRD_PARTY_NOTICES.md ]]
+[[ ! -e $PREFIX/share/doc/takedown/LICENSE && ! -e $PREFIX/share/doc/takedown/NOTICE && ! -e $PREFIX/share/doc/takedown/THIRD_PARTY_NOTICES.md ]]
 expect_failure 'INSTALL_PREFIX must be absolute' env INSTALL_PREFIX=relative bash "$FIXTURE/install-user.sh"
 expect_failure 'unsupported desktop-entry characters' env INSTALL_PREFIX="$WORK/bad%prefix" bash "$FIXTURE/install-user.sh"
 if [[ $(uname -s) == Darwin && -n ${NATIVE_BINARY:-} ]]; then

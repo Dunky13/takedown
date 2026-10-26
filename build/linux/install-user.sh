@@ -8,8 +8,8 @@ init_prefix
 # than treating it as a target directory. No tool is installed by this script.
 LINK_TOOL=$(command -v link) || fail 'the POSIX link utility is required for safe installation'
 FILES=(bin/takedown share/applications/takedown.desktop share/icons/hicolor/scalable/apps/takedown.svg
-  share/doc/takedown/NOTICE share/doc/takedown/THIRD_PARTY_NOTICES.md)
-for name in README.md PRIVACY.md PRIVACY.html BUILD-INFO.txt LICENSE LICENSE.md LICENSE.txt COPYING; do
+  share/doc/takedown/LICENSE share/doc/takedown/NOTICE share/doc/takedown/THIRD_PARTY_NOTICES.md)
+for name in README.md PRIVACY.md PRIVACY.html BUILD-INFO.txt LICENSE.md LICENSE.txt COPYING; do
   src="$ROOT/share/doc/takedown/$name"
   [[ ! -L $src ]] || fail "symlink in package payload: $name"
   [[ ! -e $src ]] || FILES+=("share/doc/takedown/$name")
