@@ -8,6 +8,8 @@ ARTIFACTS=${2:?usage: publish-release.sh plan-directory downloaded-artifacts}
 : "${EXPECTED_SHA:?EXPECTED_SHA is required}"
 : "${RELEASE_CHANNEL:?RELEASE_CHANNEL must be manual, auto or nightly}"
 fail() { printf 'publish-release: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=scripts/macos-ticket-policy.sh
+source "$(dirname -- "$0")/macos-ticket-policy.sh"
 [[ $GH_REPO =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'invalid repository'
 [[ $RELEASE_CHANNEL == manual || $RELEASE_CHANNEL == auto || $RELEASE_CHANNEL == nightly ]] || fail 'invalid channel'
 jq -e '(.version | type == "string") and (.package_version | type == "string") and
@@ -135,6 +137,7 @@ for arch in arm64 amd64; do
       (.submission_id | type == "string" and test("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")) and
       (.submitted_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
     ' "$evidence/$stage/receipt.json" >/dev/null || fail "unverified macOS receipt: $arch/$stage"
+    macos_ticket_verified_receipt "$evidence/$stage/receipt.json" || fail "invalid requalification receipt: $arch/$stage"
     jq -e --slurpfile receipt "$evidence/$stage/receipt.json" '
       .status == "Accepted" and .jobId == $receipt[0].submission_id and
       .archiveFilename == $receipt[0].filename and .sha256 == $receipt[0].submitted_sha256

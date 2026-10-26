@@ -5,7 +5,7 @@ ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 TEST_WORK=$(mktemp -d "${TMPDIR:-/tmp}/takedown-continuation-tests.XXXXXX")
 trap 'rm -rf -- "$TEST_WORK"' EXIT
 mkdir -p "$TEST_WORK/repo/scripts" "$TEST_WORK/state"
-cp "$ROOT/scripts/continue-apple-release.sh" "$ROOT/scripts/fresh-apple-acceptance.sh" "$TEST_WORK/repo/scripts/"
+cp "$ROOT/scripts/continue-apple-release.sh" "$ROOT/scripts/fresh-apple-acceptance.sh" "$ROOT/scripts/apple-stages-verified.sh" "$ROOT/scripts/macos-ticket-policy.sh" "$TEST_WORK/repo/scripts/"
 export FIXTURE_STATE="$TEST_WORK/state" VERSION=1.2.3 RELEASE_VERSION=1.2.3 NOTARY_ARCH=arm64
 export NOTARY_SOURCE_SHA=1111111111111111111111111111111111111111 GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=1 ORIGIN_RUN=123 ORIGIN_ATTEMPT=1
 export NOTARY_EVIDENCE_DIR="$TEST_WORK/evidence" GITHUB_STEP_SUMMARY="$TEST_WORK/summary" MOCK_PACKAGE_STATUS=0
@@ -46,6 +46,9 @@ mkdir "$2"
 cp -R "$FIXTURE_STATE/retained/." "$2/"
 MOCK
 mkdir "$NOTARY_EVIDENCE_DIR"
+mkdir -p "$NOTARY_EVIDENCE_DIR/app" "$NOTARY_EVIDENCE_DIR/dmg"
+printf '{"team_id":"ABCDEFGHIJ","state":"verified"}\n' > "$NOTARY_EVIDENCE_DIR/app/receipt.json"
+cp "$NOTARY_EVIDENCE_DIR/app/receipt.json" "$NOTARY_EVIDENCE_DIR/dmg/receipt.json"
 continue_candidate() { bash "$TEST_WORK/repo/scripts/continue-apple-release.sh" > "$TEST_WORK/log" 2>&1; }
 MOCK_PACKAGE_STATUS=75 continue_candidate
 [[ ! -d $NOTARY_EVIDENCE_DIR/final && ! -f $FIXTURE_STATE/checkpoint-calls ]]
@@ -68,6 +71,21 @@ rm -rf "$TEST_WORK/repo/dist"
 NOTARY_EVIDENCE_DIR="$TEST_WORK/fresh" GITHUB_RUN_ID=777 GITHUB_RUN_ATTEMPT=2 bash "$TEST_WORK/repo/scripts/fresh-apple-acceptance.sh" > "$TEST_WORK/log" 2>&1
 jq -e '.ci_run_id=="123" and .ci_run_attempt=="1" and .verification_run_id=="777" and .verification_run_attempt=="2" and .credential_free_runner==true' "$TEST_WORK/fresh/fresh-acceptance-arm64.json" >/dev/null
 cp -R "$FIXTURE_STATE/retained" "$TEST_WORK/full-retained"
+for stage in app dmg; do
+  for state in validation-pending ticket-blocked; do
+    jq --arg state "$state" '.state=$state' "$TEST_WORK/full-retained/$stage/receipt.json" > "$FIXTURE_STATE/retained/$stage/receipt.json"
+    if bash "$TEST_WORK/repo/scripts/apple-stages-verified.sh" "$FIXTURE_STATE/retained"; then echo 'stale finals made blocked stage ready' >&2; exit 1; fi
+    NOTARY_EVIDENCE_DIR="$TEST_WORK/fresh-$stage-$state" GITHUB_RUN_ID=777 bash "$TEST_WORK/repo/scripts/fresh-apple-acceptance.sh" > "$TEST_WORK/log" 2>&1
+    [[ ! -f $TEST_WORK/fresh-$stage-$state/fresh-acceptance-arm64.json ]]
+    cp "$FIXTURE_STATE/retained/$stage/receipt.json" "$NOTARY_EVIDENCE_DIR/$stage/receipt.json"
+    count=$(wc -l < "$FIXTURE_STATE/package-calls")
+    if MOCK_PACKAGE_STATUS=1 continue_candidate; then echo 'stale finals bypassed signing recovery' >&2; exit 1; fi
+    [[ $(wc -l < "$FIXTURE_STATE/package-calls") -eq $((count + 1)) ]]
+    cp "$TEST_WORK/full-retained/$stage/receipt.json" "$FIXTURE_STATE/retained/$stage/receipt.json"
+    cp "$TEST_WORK/full-retained/$stage/receipt.json" "$NOTARY_EVIDENCE_DIR/$stage/receipt.json"
+  done
+done
+echo 'PASS: pending/blocked app or DMG cannot reuse stale finals, claim fresh acceptance or pass readiness'
 rm "$FIXTURE_STATE/retained/acceptance.json"
 NOTARY_EVIDENCE_DIR="$TEST_WORK/pending" GITHUB_RUN_ID=777 bash "$TEST_WORK/repo/scripts/fresh-apple-acceptance.sh" > "$TEST_WORK/log" 2>&1
 [[ ! -f $TEST_WORK/pending/fresh-acceptance-arm64.json ]]

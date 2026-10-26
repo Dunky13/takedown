@@ -380,6 +380,13 @@ for arch in arm64 amd64; do
     'app/receipt.json|.version="9.9.9"' \
     'app/receipt.json|.architecture="other"' \
     'app/receipt.json|.state="accepted"' \
+    'app/receipt.json|.state="validation-pending"' \
+    'app/receipt.json|.state="ticket-blocked"' \
+    'app/receipt.json|.requalification_parent_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+    'app/receipt.json|.validation_attempts=4' \
+    'app/receipt.json|.failure_phase="stapler-validate"' \
+    'app/receipt.json|.failure_exit="68"' \
+    'app/receipt.json|.failure_class="unclassified"' \
     'app/receipt.json|.submission_id=null' \
     'app/receipt.json|.ci_run_id="999"' \
     'app/receipt.json|.ci_run_attempt="3"' \
@@ -388,6 +395,11 @@ for arch in arm64 amd64; do
     'app/apple-log.json|.archiveFilename="bad"' \
     'app/apple-log.json|.sha256="bad"' \
     'dmg/receipt.json|.state="pending"' \
+    'dmg/receipt.json|.state="validation-pending"' \
+    'dmg/receipt.json|.state="ticket-blocked"' \
+    'dmg/receipt.json|.failure_phase="stapler-validate"' \
+    'dmg/receipt.json|.failure_exit="68"' \
+    'dmg/receipt.json|.failure_class="unclassified"' \
     'dmg/apple-log.json|.jobId="bad"' \
     'acceptance.json|.source_commit="bad"' \
     'acceptance.json|.ci_run_id="999"' \

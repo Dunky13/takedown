@@ -138,6 +138,8 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           NOTARY_YIELD_AFTER_SUBMIT: ${{ vars.APPLE_QUALIFY_CONTINUATION == 'true' && 'true' || 'false' }}
+          # Nonsecret exact terminal-receipt approval, consumed only on protected main.
+          NOTARY_REQUALIFY_RECEIPT_SHA256: ${{ vars.APPLE_REQUALIFY_RECEIPT_SHA256 }}
         run: |
           env GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash scripts/continue-apple-release.sh
       - name: Preserve allowlisted failure receipts
@@ -150,6 +152,7 @@ jobs:
             ${{ runner.temp }}/notary-evidence/checkpoint.json
             ${{ runner.temp }}/notary-evidence/acceptance.json
             ${{ runner.temp }}/notary-evidence/*/receipt.json
+            ${{ runner.temp }}/notary-evidence/*/blocked-receipt-*.json
             ${{ runner.temp }}/notary-evidence/*/apple-log.json
           if-no-files-found: warn
           retention-days: 7
@@ -242,7 +245,8 @@ jobs:
           ready=true
           for arch in arm64 amd64; do
             env NOTARY_ARCH="$arch" GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash scripts/apple-release-state.sh restore "$RUNNER_TEMP/evidence-$arch"
-            if [[ ! -f $RUNNER_TEMP/evidence-$arch/acceptance.json || ! -f $RUNNER_TEMP/evidence-$arch/final/SHA256SUMS ]]; then ready=false; fi
+            if [[ ! -f $RUNNER_TEMP/evidence-$arch/acceptance.json || ! -f $RUNNER_TEMP/evidence-$arch/final/SHA256SUMS ]] ||
+              ! bash scripts/apple-stages-verified.sh "$RUNNER_TEMP/evidence-$arch"; then ready=false; fi
           done
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
           echo "Both architecture final checkpoints ready: $ready" >> "$GITHUB_STEP_SUMMARY"

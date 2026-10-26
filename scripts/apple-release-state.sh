@@ -96,6 +96,7 @@ put() {
   fi
 }
 allowed() {
+  if [[ $1 =~ ^(app|dmg)/blocked-receipt-[0-9a-f]{64}\.json$ ]]; then return 0; fi
   case $1 in
     input.json|acceptance.json|app/receipt.json|app/apple-log.json|app/*.zip|dmg/receipt.json|dmg/apple-log.json|dmg/*.dmg|final/*.zip|final/*.dmg|final/SHA256SUMS) ;;
     *) return 1 ;;

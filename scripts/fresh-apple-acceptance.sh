@@ -5,7 +5,8 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 verification_run=$GITHUB_RUN_ID
 env GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash "$ROOT/scripts/apple-release-state.sh" restore "$NOTARY_EVIDENCE_DIR"
-if [[ ! -f $NOTARY_EVIDENCE_DIR/acceptance.json || ! -f $NOTARY_EVIDENCE_DIR/final/SHA256SUMS ]]; then
+if [[ ! -f $NOTARY_EVIDENCE_DIR/acceptance.json || ! -f $NOTARY_EVIDENCE_DIR/final/SHA256SUMS ]] ||
+  ! bash "$ROOT/scripts/apple-stages-verified.sh" "$NOTARY_EVIDENCE_DIR"; then
   echo 'Original candidate is still pending; no fresh acceptance claimed.'
   exit 0
 fi

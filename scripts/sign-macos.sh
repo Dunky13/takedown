@@ -22,6 +22,7 @@ xcrun --find stapler >/dev/null 2>&1 || fail 'prerequisite stapler lookup failed
 [[ ${NOTARY_ARCH:-} == arm64 || ${NOTARY_ARCH:-} == amd64 ]] || fail 'NOTARY_ARCH must be arm64 or amd64'
 [[ ${RELEASE_VERSION:-} =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.+-]+)?$ ]] || fail 'RELEASE_VERSION must be a safe release version'
 [[ ${GITHUB_RUN_ID:-0} =~ ^[0-9]+$ && ${GITHUB_RUN_ATTEMPT:-0} =~ ^[0-9]+$ ]] || fail 'invalid CI run identity'
+[[ -z ${NOTARY_REQUALIFY_RECEIPT_SHA256:-} || $NOTARY_REQUALIFY_RECEIPT_SHA256 =~ ^[0-9a-f]{64}$ ]] || fail 'invalid exact blocked-receipt pin'
 [[ -n ${NOTARY_EVIDENCE_DIR:-} && $NOTARY_EVIDENCE_DIR == /* && ! -L $NOTARY_EVIDENCE_DIR ]] || fail 'NOTARY_EVIDENCE_DIR must be an absolute persistent directory'
 if [[ -n ${NOTARY_CHECKPOINT_HOOK:-} ]]; then
   [[ $NOTARY_CHECKPOINT_HOOK == /* && -f $NOTARY_CHECKPOINT_HOOK && ! -L $NOTARY_CHECKPOINT_HOOK ]] || fail 'NOTARY_CHECKPOINT_HOOK must be an absolute trusted regular script'
@@ -47,9 +48,12 @@ KEYCHAIN="$WORK/signing.keychain-db"
 source "$(dirname -- "$0")/keychain-lifecycle.sh"
 # shellcheck source=scripts/macos-certificate-import.sh
 source "$(dirname -- "$0")/macos-certificate-import.sh"
+# shellcheck source=scripts/macos-ticket-policy.sh
+source "$(dirname -- "$0")/macos-ticket-policy.sh"
 KEYCHAIN_MUTATION_STARTED=false
 BASENAME="takedown-$RELEASE_VERSION-macos-$NOTARY_ARCH-${NOTARY_SOURCE_SHA:0:12}-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-0}-$STAGE.$EXT"
 SUBMISSION_ID='' SUBMITTED_SHA='' VERIFIED_SHA='' STATE='' FAILURE_PHASE='' FAILURE_EXIT='' TICKET_ATTEMPTS=0
+FAILURE_CLASS='' VALIDATION_ATTEMPTS=0 REQUALIFICATION_PARENT='' REQUALIFY=false VALIDATION_RESERVED=false
 CHECKPOINT_FAILED=false
 hash() { shasum -a 256 "$1" | cut -d ' ' -f 1; }
 checkpoint() {
@@ -72,22 +76,27 @@ receipt() {
     --arg team "$APPLE_TEAM_ID" --arg identity "$MACOS_SIGN_IDENTITY" \
     --arg verified "$VERIFIED_SHA" --arg verified_name "$VERIFIED_NAME" \
     --arg phase "$FAILURE_PHASE" --arg result "$FAILURE_EXIT" \
-    --argjson ticket_attempts "$TICKET_ATTEMPTS" \
+    --argjson ticket_attempts "$TICKET_ATTEMPTS" --argjson validation_attempts "$VALIDATION_ATTEMPTS" \
+    --arg failure_class "$FAILURE_CLASS" --arg parent "$REQUALIFICATION_PARENT" \
     '{schema:2,state:$state,submission_id:(if $id=="" then null else $id end),filename:$filename,
       submitted_sha256:$sha256,source_commit:$source,version:$version,architecture:$architecture,
       stage:$stage,ci_run_id:$run,ci_run_attempt:$attempt,team_id:$team,signing_identity:$identity,
-      verified_filename:$verified_name,verified_sha256:$verified,failure_phase:$phase,failure_exit:$result,ticket_attempts:$ticket_attempts}' \
+      verified_filename:$verified_name,verified_sha256:$verified,failure_phase:$phase,failure_exit:$result,
+      failure_class:$failure_class,ticket_attempts:$ticket_attempts,validation_attempts:$validation_attempts,
+      requalification_parent_sha256:$parent}' \
     > "$EVIDENCE/.receipt.tmp"
   mv "$EVIDENCE/.receipt.tmp" "$EVIDENCE/receipt.json"
   checkpoint
 }
 command_failed() {
   FAILURE_PHASE=$1 FAILURE_EXIT=$2
+  FAILURE_CLASS=unclassified
   printf 'sign-macos: stage=%s command=%s exit=%s (private output withheld)\n' "$STAGE" "$FAILURE_PHASE" "$FAILURE_EXIT" >&2
   if [[ $FAILURE_PHASE == keychain-import ]]; then
     macos_certificate_import_diagnostic "$WORK/command.log"
   fi
-  [[ -z $STATE ]] || receipt "$STATE"
+  if [[ -n $VERIFIED_SHA ]]; then receipt ticket-blocked
+  elif [[ -n $STATE ]]; then receipt "$STATE"; fi
   exit 1
 }
 run() {
@@ -126,7 +135,7 @@ for retained in "$EVIDENCE"/* "$EVIDENCE"/.[!.]* "$EVIDENCE"/..?*; do
   [[ -e $retained ]] || continue
   case ${retained##*/} in
     receipt.json|apple-log.json|"$BASENAME"|"$VERIFIED_NAME"|.lock) ;;
-    *) fail 'unexpected unbound stage evidence' ;;
+    *) [[ ${retained##*/} =~ ^blocked-receipt-[0-9a-f]{64}\.json$ ]] || fail 'unexpected unbound stage evidence' ;;
   esac
 done
 if [[ -e $EVIDENCE/receipt.json || -L $EVIDENCE/receipt.json ]]; then
@@ -137,8 +146,11 @@ if [[ -e $EVIDENCE/receipt.json || -L $EVIDENCE/receipt.json ]]; then
     '.schema == 2 and .filename == $filename and .source_commit == $source and .version == $version and
      .architecture == $arch and .stage == $stage and .ci_run_id == $run and .ci_run_attempt == $attempt and
      .team_id == $team and .signing_identity == $identity and .verified_filename == $verified_name and
-     (.state | IN("prepared","submission-unknown","submitted","pending","accepted","verified")) and
+     (.state | IN("prepared","submission-unknown","submitted","pending","accepted","verified","validation-pending","ticket-blocked")) and
      (.ticket_attempts | type == "number" and floor == . and . >= 0 and . <= 3) and
+     (if has("validation_attempts") then (.validation_attempts | type == "number" and floor == . and . >= 0 and . <= 3) else true end) and
+     (if has("failure_class") then (.failure_class | IN("","unclassified","cloudkit-transport")) else true end) and
+     (if has("requalification_parent_sha256") then (.requalification_parent_sha256 | type == "string") else true end) and
      (.submitted_sha256 | type == "string") and (.verified_sha256 | type == "string")' \
     "$EVIDENCE/receipt.json" >/dev/null 2>&1 || fail 'unbound, mismatched or blocked stage receipt; no reuse permitted'
   STATE=$(jq -r .state "$EVIDENCE/receipt.json")
@@ -146,6 +158,31 @@ if [[ -e $EVIDENCE/receipt.json || -L $EVIDENCE/receipt.json ]]; then
   SUBMITTED_SHA=$(jq -r .submitted_sha256 "$EVIDENCE/receipt.json")
   VERIFIED_SHA=$(jq -r .verified_sha256 "$EVIDENCE/receipt.json")
   TICKET_ATTEMPTS=$(jq -r .ticket_attempts "$EVIDENCE/receipt.json")
+  FAILURE_PHASE=$(jq -r '.failure_phase // ""' "$EVIDENCE/receipt.json")
+  FAILURE_EXIT=$(jq -r '.failure_exit // ""' "$EVIDENCE/receipt.json")
+  FAILURE_CLASS=$(jq -r '.failure_class // "unclassified"' "$EVIDENCE/receipt.json")
+  REQUALIFICATION_PARENT=$(jq -r '.requalification_parent_sha256 // ""' "$EVIDENCE/receipt.json")
+  # Legacy blocked verified-archive failures have already spent at least their
+  # retained ticket count. Never migrate them to a fresh retry budget.
+  VALIDATION_ATTEMPTS=$(jq -r '.validation_attempts // (if .state == "ticket-blocked" and .verified_sha256 != "" then .ticket_attempts else 0 end)' "$EVIDENCE/receipt.json")
+  if [[ $STATE == ticket-blocked ]]; then
+    [[ -n ${NOTARY_REQUALIFY_RECEIPT_SHA256:-} && $(hash "$EVIDENCE/receipt.json") == "$NOTARY_REQUALIFY_RECEIPT_SHA256" &&
+       $FAILURE_PHASE == stapler-validate && $FAILURE_EXIT == 68 && $FAILURE_CLASS == unclassified &&
+       -z $REQUALIFICATION_PARENT && -n $VERIFIED_SHA && $TICKET_ATTEMPTS -gt 0 && $TICKET_ATTEMPTS -lt 3 &&
+       $VALIDATION_ATTEMPTS -gt 0 && $VALIDATION_ATTEMPTS -lt 3 ]] || fail 'blocked receipt requires an eligible exact receipt pin; no reuse permitted'
+    REQUALIFY=true
+  fi
+  if [[ $STATE == validation-pending ]]; then
+    [[ -n $VERIFIED_SHA &&
+      ( ( -z $FAILURE_CLASS && -z $FAILURE_PHASE && -z $FAILURE_EXIT ) ||
+        ( $FAILURE_CLASS == cloudkit-transport && $FAILURE_PHASE == stapler-validate && $FAILURE_EXIT == 68 && $VALIDATION_ATTEMPTS -gt 0 ) ) ]] || fail 'invalid pending validation receipt'
+  fi
+  macos_ticket_parent_valid "$EVIDENCE/receipt.json" "$EVIDENCE" || fail 'missing or mismatched pinned parent receipt'
+  for parent_file in "$EVIDENCE"/blocked-receipt-*.json; do
+    [[ -e $parent_file ]] || continue
+    [[ ${parent_file##*/} == "blocked-receipt-$REQUALIFICATION_PARENT.json" ||
+       ( $REQUALIFY == true && ${parent_file##*/} == "blocked-receipt-$NOTARY_REQUALIFY_RECEIPT_SHA256.json" && $(hash "$parent_file") == "$NOTARY_REQUALIFY_RECEIPT_SHA256" ) ]] || fail 'unbound parent receipt'
+  done
   if [[ $STATE == prepared ]]; then
     [[ ! -e $EVIDENCE/apple-log.json && -z $SUBMISSION_ID && -z $SUBMITTED_SHA && -z $VERIFIED_SHA && ! -e $EVIDENCE/$BASENAME && ! -L $EVIDENCE/$BASENAME && ! -e $EVIDENCE/$VERIFIED_NAME && ! -L $EVIDENCE/$VERIFIED_NAME ]] || fail 'prepared stage contains upload intent or retained bytes; reconcile before retrying'
   else
@@ -156,7 +193,7 @@ if [[ -e $EVIDENCE/receipt.json || -L $EVIDENCE/receipt.json ]]; then
     else
       [[ $SUBMISSION_ID =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || fail 'invalid retained UUID'
     fi
-    if [[ $STATE == verified ]]; then
+    if [[ $STATE == verified || $STATE == validation-pending || $REQUALIFY == true ]]; then
       [[ $VERIFIED_SHA =~ ^[0-9a-f]{64}$ && -f $EVIDENCE/$VERIFIED_NAME && ! -L $EVIDENCE/$VERIFIED_NAME ]] || fail 'missing verified bytes'
       [[ $(hash "$EVIDENCE/$VERIFIED_NAME") == "$VERIFIED_SHA" ]] || fail 'verified archive hash mismatch'
     else
@@ -168,6 +205,31 @@ else
   [[ -z $(find "$EVIDENCE" -mindepth 1 -maxdepth 1 ! -name .lock -print) ]] || fail 'unbound stage files without receipt'
   receipt prepared
 fi
+# A pin is consumed only after every original identity and retained digest checks.
+# Preserve the terminal receipt as a separate append-only custody blob first.
+if [[ $REQUALIFY == true ]]; then
+  jq -e --slurpfile receipt "$EVIDENCE/receipt.json" '
+    .status == "Accepted" and .jobId == $receipt[0].submission_id and
+    .archiveFilename == $receipt[0].filename and .sha256 == $receipt[0].submitted_sha256
+  ' "$EVIDENCE/apple-log.json" >/dev/null 2>&1 || fail 'blocked receipt lacks its bound Accepted diagnostic'
+  REQUALIFICATION_PARENT=$NOTARY_REQUALIFY_RECEIPT_SHA256
+  if [[ -e $EVIDENCE/blocked-receipt-$REQUALIFICATION_PARENT.json ]]; then
+    cmp -s "$EVIDENCE/receipt.json" "$EVIDENCE/blocked-receipt-$REQUALIFICATION_PARENT.json" || fail 'pinned parent collision'
+  else
+    cp "$EVIDENCE/receipt.json" "$EVIDENCE/blocked-receipt-$REQUALIFICATION_PARENT.json"
+  fi
+  checkpoint
+fi
+if [[ -n $VERIFIED_SHA ]]; then
+  if [[ $STATE == validation-pending || $REQUALIFY == true ]]; then
+    [[ $VALIDATION_ATTEMPTS -lt 3 ]] || { receipt ticket-blocked; fail 'validation continuation budget exhausted'; }
+    VALIDATION_ATTEMPTS=$((VALIDATION_ATTEMPTS + 1))
+    VALIDATION_RESERVED=true
+  fi
+  FAILURE_PHASE='' FAILURE_EXIT='' FAILURE_CLASS=''
+  # A formerly verified receipt is never publishable while any recheck is pending.
+  receipt validation-pending
+fi
 # Re-checkpoint a restored state before any local signing or remote operation.
 checkpoint
 
@@ -177,11 +239,11 @@ verify_signature() {
   local result=0
   codesign --display --verbose=4 "$item" > "$WORK/signature.txt" 2>&1 || result=$?
   [[ $result == 0 ]] || command_failed signature-display "$result"
-  grep -qx "TeamIdentifier=$APPLE_TEAM_ID" "$WORK/signature.txt" || fail 'signed artifact has the wrong TeamIdentifier'
-  grep -Fqx "Authority=$MACOS_SIGN_IDENTITY" "$WORK/signature.txt" || fail 'signed artifact has the wrong Developer ID authority'
-  grep -Eq '^Timestamp=.+$' "$WORK/signature.txt" || fail 'signed artifact lacks a secure timestamp'
+  grep -qx "TeamIdentifier=$APPLE_TEAM_ID" "$WORK/signature.txt" || command_failed signature-team 1
+  grep -Fqx "Authority=$MACOS_SIGN_IDENTITY" "$WORK/signature.txt" || command_failed signature-authority 1
+  grep -Eq '^Timestamp=.+$' "$WORK/signature.txt" || command_failed signature-timestamp 1
   if [[ $STAGE == app ]]; then
-    grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' "$WORK/signature.txt" || fail 'signed app lacks hardened runtime'
+    grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' "$WORK/signature.txt" || command_failed signature-runtime 1
   fi
 }
 # Recovery needs no certificate import and never signs retained artifacts again.
@@ -293,16 +355,16 @@ fi
 printf 'Notarization submission (%s): %s\n' "$STAGE" "$SUBMISSION_ID"
 run notary-info xcrun notarytool info "$SUBMISSION_ID" "${AUTH[@]}" --output-format json
 cp "$WORK/command.log" "$WORK/info.json"
-jq -e --arg id "$SUBMISSION_ID" --arg filename "$BASENAME" '.id == $id and .name == $filename and (.status | type == "string")' "$WORK/info.json" >/dev/null 2>&1 || fail 'Apple info UUID/filename/status mismatch'
+jq -e --arg id "$SUBMISSION_ID" --arg filename "$BASENAME" '.id == $id and .name == $filename and (.status | type == "string")' "$WORK/info.json" >/dev/null 2>&1 || { receipt diagnostic-mismatch; fail 'Apple info UUID/filename/status mismatch'; }
 STATUS=$(jq -r .status "$WORK/info.json")
 WAIT_RESULT=0
 if [[ $STATUS == 'In Progress' ]]; then
   WAIT_RESULT=0
   xcrun notarytool wait "$SUBMISSION_ID" "${AUTH[@]}" --timeout 30m --output-format json > "$WORK/wait.json" 2> "$WORK/notary.stderr" || WAIT_RESULT=$?
-  jq -e --arg id "$SUBMISSION_ID" '.id == $id and (.status | type == "string")' "$WORK/wait.json" >/dev/null 2>&1 || command_failed notary-wait-response "$WAIT_RESULT"
+  jq -e --arg id "$SUBMISSION_ID" '.id == $id and (.status | type == "string")' "$WORK/wait.json" >/dev/null 2>&1 || command_failed notary-wait-response 1
   STATUS=$(jq -r .status "$WORK/wait.json")
   if [[ $STATUS == 'In Progress' ]]; then
-    receipt pending
+    if [[ -n $VERIFIED_SHA ]]; then receipt validation-pending; else receipt pending; fi
     printf 'sign-macos: stage=%s pending UUID=%s; continue this candidate (exit 75)\n' "$STAGE" "$SUBMISSION_ID" >&2
     exit 75
   fi
@@ -313,7 +375,7 @@ run notary-log xcrun notarytool log "$SUBMISSION_ID" "$WORK/apple-log.json" "${A
 jq '{logFormatVersion,jobId,status,statusSummary,statusCode,archiveFilename,uploadDate,sha256,
   ticketContents:(if .ticketContents == null then null else [.ticketContents[] | {path,digestAlgorithm,cdhash,arch}] end),
   issues:(if .issues == null then null else [.issues[] | {severity,code,path,message,docUrl,architecture}] end)}' \
-  "$WORK/apple-log.json" > "$WORK/safe-log.json" 2> "$WORK/command.log" || fail 'malformed Apple diagnostic log'
+  "$WORK/apple-log.json" > "$WORK/safe-log.json" 2> "$WORK/command.log" || command_failed notary-log-format 1
 mv "$WORK/safe-log.json" "$EVIDENCE/apple-log.json"
 checkpoint
 jq -e --arg id "$SUBMISSION_ID" --arg filename "$BASENAME" --arg sha256 "$SUBMITTED_SHA" \
@@ -321,22 +383,22 @@ jq -e --arg id "$SUBMISSION_ID" --arg filename "$BASENAME" --arg sha256 "$SUBMIT
   "$EVIDENCE/apple-log.json" >/dev/null 2>&1 || { receipt diagnostic-mismatch; fail 'Apple diagnostic UUID, filename or hash mismatch'; }
 if [[ $STATUS == Invalid || $STATUS == Rejected ]]; then receipt rejected; fail 'Apple submission rejected; candidate blocked'; fi
 jq -e '.status == "Accepted"' "$EVIDENCE/apple-log.json" >/dev/null 2>&1 || { receipt diagnostic-mismatch; fail 'Apple diagnostic status was not Accepted'; }
-[[ $STATUS == Accepted ]] || fail 'Apple submission was not Accepted'
+[[ $STATUS == Accepted ]] || { receipt diagnostic-mismatch; fail 'Apple submission was not Accepted'; }
 [[ $WAIT_RESULT == 0 ]] || command_failed notary-wait "$WAIT_RESULT"
-if [[ $STATE != verified ]]; then receipt accepted; fi
+if [[ -z $VERIFIED_SHA ]]; then receipt accepted; fi
 
 # Work from the original signed upload or the exact previously verified bytes.
 # No recovered app/DMG is rebuilt or re-signed.
 if [[ $STAGE == app ]]; then
   mkdir "$WORK/restore"
   ARCHIVE="$EVIDENCE/$BASENAME"
-  [[ $STATE != verified ]] || ARCHIVE="$EVIDENCE/$VERIFIED_NAME"
+  [[ -z $VERIFIED_SHA ]] || ARCHIVE="$EVIDENCE/$VERIFIED_NAME"
   run restore-app ditto -x -k "$ARCHIVE" "$WORK/restore"
   CANDIDATE="$WORK/restore/takedown.app"
-  [[ -d $CANDIDATE && ! -L $CANDIDATE && -f $CANDIDATE/Contents/MacOS/takedown && ! -L $CANDIDATE/Contents/MacOS/takedown ]] || fail 'retained archive does not contain takedown.app'
+  [[ -d $CANDIDATE && ! -L $CANDIDATE && -f $CANDIDATE/Contents/MacOS/takedown && ! -L $CANDIDATE/Contents/MacOS/takedown ]] || command_failed restore-app-shape 1
 else
   ARCHIVE="$EVIDENCE/$BASENAME"
-  [[ $STATE != verified ]] || ARCHIVE="$EVIDENCE/$VERIFIED_NAME"
+  [[ -z $VERIFIED_SHA ]] || ARCHIVE="$EVIDENCE/$VERIFIED_NAME"
   run restore-dmg cp "$ARCHIVE" "$CANDIDATE"
 fi
 verify_signature "$CANDIDATE"
@@ -345,10 +407,20 @@ ticket_operation() {
   xcrun stapler "$operation" "$CANDIDATE" > "$WORK/ticket.log" 2>&1 || result=$?
   [[ $result != 0 ]] || return 0
   FAILURE_PHASE="stapler-$operation" FAILURE_EXIT=$result
+  FAILURE_CLASS=$(macos_ticket_failure_class "$WORK/ticket.log" "$result")
+  printf 'sign-macos: stage=%s command=%s exit=%s cause=%s (allowlisted classification; raw output withheld)\n' "$STAGE" "$FAILURE_PHASE" "$result" "$FAILURE_CLASS" >&2
+  if [[ -n $VERIFIED_SHA ]]; then
+    if [[ $VALIDATION_RESERVED == false && $VALIDATION_ATTEMPTS -lt 3 ]]; then VALIDATION_ATTEMPTS=$((VALIDATION_ATTEMPTS + 1)); fi
+    if [[ $operation == validate && $FAILURE_CLASS == cloudkit-transport && $VALIDATION_ATTEMPTS -lt 3 ]]; then
+      receipt validation-pending
+      exit 75
+    fi
+    receipt ticket-blocked
+    fail 'verified archive validation failed permanently or exhausted its bounded continuation budget'
+  fi
   # Only the diagnosed CloudKit transport failure is retryable. An Apple
   # rejection, signature error or arbitrary stapler failure is terminal.
-  if [[ $STATE != verified && $result == 68 && $TICKET_ATTEMPTS -lt 3 ]] &&
-    grep -Eiq '(CloudKit.*(connection|network|unavailable)|connection.*(lost|reset|timed out))' "$WORK/ticket.log"; then
+  if [[ $FAILURE_CLASS == cloudkit-transport && $TICKET_ATTEMPTS -lt 3 ]]; then
     receipt accepted
     printf 'sign-macos: stage=%s command=%s exit=%s; bounded ticket continuation %s/3\n' "$STAGE" "$FAILURE_PHASE" "$result" "$TICKET_ATTEMPTS" >&2
     exit 75
@@ -356,7 +428,7 @@ ticket_operation() {
   receipt ticket-blocked
   fail 'ticket operation failed permanently or exhausted its bounded continuation budget'
 }
-if [[ $STATE != verified ]]; then
+if [[ -z $VERIFIED_SHA ]]; then
   [[ $TICKET_ATTEMPTS -lt 3 ]] || { receipt ticket-blocked; fail 'ticket continuation budget exhausted'; }
   TICKET_ATTEMPTS=$((TICKET_ATTEMPTS + 1))
   receipt accepted
@@ -369,7 +441,7 @@ if [[ $STAGE == app ]]; then
 else
   run gatekeeper spctl --assess --type open --context context:primary-signature --verbose=2 "$CANDIDATE"
 fi
-if [[ $STATE != verified ]]; then
+if [[ -z $VERIFIED_SHA ]]; then
   if [[ $STAGE == app ]]; then
     run verified-archive ditto -c -k --sequesterRsrc --keepParent "$CANDIDATE" "$WORK/$VERIFIED_NAME"
   else
@@ -378,6 +450,7 @@ if [[ $STATE != verified ]]; then
   run retain-verified cp "$WORK/$VERIFIED_NAME" "$EVIDENCE/$VERIFIED_NAME"
   VERIFIED_SHA=$(hash "$EVIDENCE/$VERIFIED_NAME")
 fi
+[[ $(hash "$EVIDENCE/$VERIFIED_NAME") == "$VERIFIED_SHA" ]] || command_failed verified-archive-digest 1
 # Final credentials/scratch cleanup is acknowledged before a verified receipt
 # can be published. Receipt/checkpoint writes do not depend on private scratch.
 result=0
@@ -387,6 +460,7 @@ if [[ $result != 0 ]]; then
   receipt cleanup-failed
   fail 'private scratch cleanup failed'
 fi
+FAILURE_PHASE='' FAILURE_EXIT='' FAILURE_CLASS=''
 receipt verified
 # The original credential scratch is gone and custody acknowledged. This new
 # restore-only scratch contains code, tickets and command diagnostics, no keys.
