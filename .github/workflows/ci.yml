@@ -80,7 +80,7 @@ jobs:
       - name: Formatting, module integrity, tests, vet, native GUI build and CLI smoke
         run: bash scripts/ci-native.sh
       - name: Generated icons match pinned SVG and compiler settings
-        run: go run -mod=readonly -p 2 -gcflags=all=-d=fmahash=n ./assets/generate.go -check
+        run: go run -mod=readonly -p 2 -tags=noasm -gcflags=all=-d=fmahash=n ./assets/generate.go -check
       - name: Dependency notices match pinned runtime sources
         if: runner.os == 'Linux'
         run: |

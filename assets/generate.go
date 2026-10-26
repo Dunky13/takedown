@@ -1,7 +1,7 @@
 //go:build ignore
 
 // Run from the repository root:
-// go run -mod=readonly -p 2 -gcflags=all=-d=fmahash=n ./assets/generate.go
+// go run -mod=readonly -p 2 -tags=noasm -gcflags=all=-d=fmahash=n ./assets/generate.go
 package main
 
 import (
@@ -24,7 +24,10 @@ import (
 
 var sizes = []int{16, 24, 32, 48, 64, 128, 256, 512, 1024}
 
-const generatorCompilerFlags = "all=-d=fmahash=n"
+const (
+	generatorTags          = "noasm"
+	generatorCompilerFlags = "all=-d=fmahash=n"
+)
 
 func main() {
 	check := flag.Bool("check", false, "verify generated files without modifying the checkout")
@@ -39,14 +42,14 @@ func generate(check bool) error {
 	if runtime.Version() != "go1.26.10" {
 		return fmt.Errorf("Go 1.26.10 is required for reproducible icon generation (running %s)", runtime.Version())
 	}
-	// Go may fuse multiply-add operations differently across architectures.
-	// rasterx's curve rasterization changes pixels under FMA, so require the
-	// pinned generator-only compilation setting before reading or writing assets.
+	// rasterx's implicit FMA and x/image/vector's handwritten SIMD accumulation
+	// independently change pixels across architectures. Require generic raster
+	// code and non-fused operations before reading or writing any assets.
 	info, ok := debug.ReadBuildInfo()
-	if !ok || !hasGeneratorCompilerFlags(info) {
-		return fmt.Errorf("icon generation requires -gcflags=%s; run from the repository root:\n"+
-			"go run -mod=readonly -p 2 -gcflags=%s ./assets/generate.go%s",
-			generatorCompilerFlags, generatorCompilerFlags, checkArgument(check))
+	if !ok || !hasGeneratorBuildSettings(info) {
+		return fmt.Errorf("icon generation requires -tags=%s and -gcflags=%s; run from the repository root:\n"+
+			"go run -mod=readonly -p 2 -tags=%s -gcflags=%s ./assets/generate.go%s",
+			generatorTags, generatorCompilerFlags, generatorTags, generatorCompilerFlags, checkArgument(check))
 	}
 	svg, err := os.ReadFile("assets/icon.svg")
 	if err != nil {
@@ -134,13 +137,17 @@ func generate(check bool) error {
 	return nil
 }
 
-func hasGeneratorCompilerFlags(info *debug.BuildInfo) bool {
+func hasGeneratorBuildSettings(info *debug.BuildInfo) bool {
+	var tags, compilerFlags string
 	for _, setting := range info.Settings {
-		if setting.Key == "-gcflags" {
-			return setting.Value == generatorCompilerFlags
+		switch setting.Key {
+		case "-tags":
+			tags = setting.Value
+		case "-gcflags":
+			compilerFlags = setting.Value
 		}
 	}
-	return false
+	return tags == generatorTags && compilerFlags == generatorCompilerFlags
 }
 
 func checkArgument(check bool) string {

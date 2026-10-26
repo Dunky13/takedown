@@ -11,7 +11,7 @@ import (
 )
 
 func TestGeneratorRejectsUnpinnedCompilerSettingsBeforeWriting(t *testing.T) {
-	const command = "go run -mod=readonly -p 2 -gcflags=all=-d=fmahash=n ./assets/generate.go"
+	const command = "go run -mod=readonly -p 2 -tags=noasm -gcflags=all=-d=fmahash=n ./assets/generate.go"
 	for _, tc := range []struct {
 		name  string
 		flags []string
@@ -19,7 +19,10 @@ func TestGeneratorRejectsUnpinnedCompilerSettingsBeforeWriting(t *testing.T) {
 	}{
 		{name: "plain generation"},
 		{name: "plain check", check: true},
-		{name: "only one dependency pinned", flags: []string{"-gcflags=github.com/srwiley/rasterx=-d=fmahash=n"}},
+		{name: "only one dependency pinned", flags: []string{"-tags=noasm", "-gcflags=github.com/srwiley/rasterx=-d=fmahash=n"}},
+		{name: "FMA only without noasm", flags: []string{"-gcflags=all=-d=fmahash=n"}, check: true},
+		{name: "noasm only without FMA", flags: []string{"-tags=noasm"}},
+		{name: "noasm plus unrelated tag", flags: []string{"-tags=noasm,extra", "-gcflags=all=-d=fmahash=n"}, check: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := generatedAssetDigests(t)
@@ -32,14 +35,14 @@ func TestGeneratorRejectsUnpinnedCompilerSettingsBeforeWriting(t *testing.T) {
 			}
 			cmd := exec.Command("go", args...)
 			cmd.Dir = ".."
-			// The tested invocations deliberately omit the required all-packages
-			// setting, including when the outer test runner uses GOFLAGS.
+			// Test the actual command-line settings even when the outer test
+			// runner uses GOFLAGS to select tags or compiler options.
 			cmd.Env = append(os.Environ(), "GOFLAGS=")
 			output, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("generator accepted unpinned compilation: %s", output)
 			}
-			if !strings.Contains(string(output), "icon generation requires -gcflags=all=-d=fmahash=n") ||
+			if !strings.Contains(string(output), "icon generation requires -tags=noasm and -gcflags=all=-d=fmahash=n") ||
 				!strings.Contains(string(output), wantCommand) {
 				t.Fatalf("expected compiler-setting refusal and actionable command, got: %s", output)
 			}

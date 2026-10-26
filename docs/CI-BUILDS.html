@@ -53,10 +53,11 @@ Windows resource object are generated assets. See the asset instructions there
 before regenerating them. The README uses the same PNG as the GUI.
 Every native CI target regenerates the assets in memory and compares their bytes
 without rewriting the checkout. Generator compilation pins floating-point
-operation behavior as well as the Go version, so architecture-specific fused
-multiply-add instructions cannot change the rasterized pixels. This setting
-applies only to artwork generation; normal application builds use their usual
-compiler settings.</p>
+operation behavior and selects the upstream generic raster path as well as
+pinning the Go version. This prevents fused multiply-add instructions and
+architecture-specific SIMD accumulation order from changing rasterized pixels.
+These settings apply only to artwork generation; normal application builds use
+their usual compiler settings.</p>
 <p>Packages carry the project's Apache 2.0 <code>LICENSE</code> and <code>NOTICE</code>, together with
 <code>THIRD_PARTY_NOTICES.md</code> for dependencies that retain their own licenses. Changes
 to dependencies or bundled assets require checking those notices as well as the

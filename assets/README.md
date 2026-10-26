@@ -10,24 +10,35 @@ palette uses no third-party marks, fonts, or external images.
 From the repository root with Go 1.26.10:
 
 ```sh
-go run -mod=readonly -p 2 -gcflags=all=-d=fmahash=n ./assets/generate.go
-go run -mod=readonly -p 2 -gcflags=all=-d=fmahash=n ./assets/generate.go -check
+go run -mod=readonly -p 2 -tags=noasm -gcflags=all=-d=fmahash=n ./assets/generate.go
+go run -mod=readonly -p 2 -tags=noasm -gcflags=all=-d=fmahash=n ./assets/generate.go -check
 ```
 
 The first command regenerates the assets. The second renders into memory and a
 temporary directory, compares all 13 generated files byte for byte, and exits
 with an error if a file is missing or stale. It does not modify the checkout.
 
-The compiler setting applies only to this build-time generator. Go permits fused
-multiply-add (FMA) operations to round differently across architectures; without
-this setting, rasterization produced different master pixels on ARM64 and
-changed generated PNG bytes. The pinned Go 1.26.10 compiler supports
-`-d=fmahash=n`, which disables implicit FMA selection for the generator and its
-dependencies. The generator checks its actual Go build metadata and refuses to
-run without exactly `all=-d=fmahash=n`, before reading or writing artwork.
-Application builds do not need or inherit this flag. The exact byte comparison
-remains unchanged. The `n` setting can emit compiler diagnostics during builds;
-these do not change the generated assets.
+Both settings apply only to this build-time generator. Two independent sources
+of numeric variation must be controlled:
+
+- Go can contract multiplication and addition into a fused multiply-add (FMA)
+  operation, which changes rounding in rasterx's curve calculations. The pinned
+  Go 1.26.10 compiler's `-d=fmahash=n` setting disables implicit FMA selection
+  for the generator and all its dependencies.
+- `golang.org/x/image/vector` has handwritten AMD64 SIMD code that accumulates
+  floating-point coverage samples in groups, while its generic code accumulates
+  samples sequentially. Disabling compiler FMA does not affect that assembly.
+  The upstream `noasm` build tag selects the generic implementation on AMD64 as
+  well as ARM, giving both architectures the same accumulation order.
+
+Pinned Linux/AMD64 generation with both settings matched all 13 committed assets
+created on macOS/ARM64. The generator checks its actual Go build metadata and
+requires exactly `-tags=noasm` and `-gcflags=all=-d=fmahash=n` before reading the
+SVG, creating temporary directories, or writing assets. Missing or different
+settings fail with the full command, preserving `-check` when requested.
+Application builds do not need or inherit these settings. The exact byte
+comparison remains unchanged. The `n` setting can emit compiler diagnostics
+during builds; these do not change the generated assets.
 
 The generator uses the SVG rasterizer and image scaler already pinned in
 `go.mod` and `go.sum`. It rasterizes at 2048 pixels, then downsamples each output
