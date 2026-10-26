@@ -9,7 +9,12 @@ need() { command -v "$1" >/dev/null 2>&1 || fail "missing prerequisite: $1"; }
 package_validate_release_version() {
   PACKAGE_RELEASE_VERSION_EXPLICIT=${RELEASE_VERSION+x}
   RELEASE_VERSION=${RELEASE_VERSION-$VERSION}
-  go run -mod=readonly -p 2 ./cmd/releasectl validate-version --version "$RELEASE_VERSION" || fail 'RELEASE_VERSION must be a supported SemVer version'
+  if [[ -n ${RELEASECTL:-} ]]; then
+    [[ -x $RELEASECTL && -f $RELEASECTL && ! -L $RELEASECTL ]] || fail 'RELEASECTL must be a prebuilt regular executable'
+    "$RELEASECTL" validate-version --version "$RELEASE_VERSION" || fail 'RELEASE_VERSION must be a supported SemVer version'
+  else
+    go run -mod=readonly -p 2 ./cmd/releasectl validate-version --version "$RELEASE_VERSION" || fail 'RELEASE_VERSION must be a supported SemVer version'
+  fi
   [[ ${RELEASE_VERSION%%[-+]*} == "$VERSION" ]] || fail 'RELEASE_VERSION numeric core must match VERSION'
 }
 

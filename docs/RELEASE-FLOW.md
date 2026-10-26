@@ -1,238 +1,186 @@
 # Release automation
 
-Implementation handoff: [PR #2](https://github.com/Dunky13/takedown/pull/2).
-The first authorized stable release is `0.0.1`; publication must wait for the
-native CI and protected Apple signing gates described below.
+`Release and nightly` freezes one protected-main source and builds a versioned
+candidate without Apple credentials. Eligible successful `Native CI` main pushes
+publish the next patch stable release automatically. Manual patch, minor, major,
+and custom SemVer dispatch remains available. The daily 02:23 UTC schedule
+produces a signed macOS nightly if main has changed since the last published
+nightly; it catches up a missing stable release first. The twenty-minute schedule
+resumes unresolved candidates and catches up eligible main after missed events.
+Schedules may be delayed by GitHub.
 
-The `Release and nightly` workflow builds and publishes all four native targets
-from one frozen `main` commit. Manual runs choose a version bump; the daily
-schedule publishes an unsigned nightly only when `main` differs from the last
-successfully published nightly. Git tags are the version source; no version-only
-commit or dependency-file rewrite is needed.
+## Authority and supported targets
 
-## Manual release
+The release owner authorized automatic stable/nightly macOS signing, Apple
+submissions and publication, including removal of the recurring `release-signing`
+reviewer. Keep that environment restricted to branch `main`, with administrator
+bypass disabled and its seven Apple inputs isolated there. Do not copy credentials
+to repository secrets or expose them to PR/native-build jobs. The separate manual
+`Signed packages` workflow keeps its explicit authorization input and does not
+publish releases. Windows signing remains outside this automatic release graph.
 
-In GitHub Actions, select **Release and nightly → Run workflow**, choose **main**,
-then select `patch`, `minor`, `major`, or `custom`. The optional `custom_version`
-field is always visible in GitHub's form; fill it only for `custom`.
+Protected main requires `ci-required` and `conventional-commits`, both from GitHub
+Actions. The four-target native matrix and all existing checks remain required.
+Automatic candidates reject PR/fork completions, wrong workflow paths, stale
+source events, unprotected main and incomplete/unsuccessful exact-source checks.
+Required checks are bound to the suites of successful `ci.yml` and
+`conventional-commits.yml` main-push runs, including the triggering run ID.
+All action references remain pinned and checkout credentials are not persisted.
+GitHub draft discovery requires push-capable access, so the custody reader jobs
+receive `contents: write` on protected main. They receive no Apple secrets.
+The native build matrix retains `contents: read` and no Apple credentials.
 
-| Choice | Highest stable tag is `v1.2.3` | Behavior |
-| --- | --- | --- |
-| patch | `v1.2.4` | Increment patch |
-| minor | `v1.3.0` | Increment minor, reset patch |
-| major | `v2.0.0` | Increment major, reset minor and patch |
-| custom | For example `v2.0.0-rc.1` | Validate and use the exact supplied SemVer, without an input `v` prefix |
+The project adapter is Go 1.26.10, Fyne v2.8.2, Cgo and the untagged native GUI
+binary. Linux amd64 and Windows amd64 remain unsigned. macOS arm64 and amd64
+are separate apps, not a universal binary. Xcode 26.3 is selected and installed
+notarytool flags are inspected before credential use. Icons retain both `noasm`
+and `-gcflags=all=-d=fmahash=n`. Headless/test-driver binaries cannot be promoted.
 
-With no stable tags, the base is `0.0.0`: patch produces `0.0.1`, minor `0.1.0`,
-and major `1.0.0`. Only stable tags reachable from the selected `main` commit are
-considered. Prerelease tags do not advance the stable bump base. Build metadata
-does not affect SemVer precedence.
+Takedown has no automatic updater, signed update inventory or package-manager
+publication contract. This change adds no replacement trust root. Developer ID,
+Apple diagnostics, tickets and Gatekeeper remain the macOS distribution authority;
+SHA256SUMS identifies the final download bytes.
 
-Custom versions must be greater than the stable base and must not already have
-a tag. Prereleases and build metadata are accepted, for example
-`2.0.0-rc.1+build.7`. Numeric core components must be at most 65535 for Windows.
-The `nightly` prerelease namespace is reserved for the scheduled workflow.
-The selected bump is an operator choice; commit types organize the changelog
-rather than overriding that choice.
+## Version and channel policy
 
-From the repository root with authenticated GitHub CLI and workflow permissions:
+Tags reachable from frozen main are the version source. Automatic stable releases
+use the existing patch policy: no tags means `0.0.1`, and `v1.2.3` means `1.2.4`.
+Commit types organize notes; they do not silently allocate breaking/minor versions.
+Manual `minor`, `major`, and `custom` remain explicit choices. Custom versions must
+be valid SemVer greater than the stable base; the nightly namespace is reserved.
+Native metadata uses the numeric core (at most 65535 per component for Windows);
+filenames, CLI version and build information retain the full SemVer.
 
 ```sh
-gh workflow run release.yml --ref main -f bump=patch
-gh workflow run release.yml --ref main -f bump=custom -f custom_version=2.0.0-rc.1
+gh workflow run release.yml --ref main -f bump=minor
+gh workflow run release.yml --ref main -f bump=custom -f custom_version=1.0.0-rc.1
 ```
 
-Run one command for the intended release. Successful dispatch prints a workflow
-creation confirmation. Inspect the run before dispatching another release.
-The workflow must first be present on the default branch.
+Run one dispatch for the intended version. An unresolved candidate always resumes
+before another candidate is allocated, regardless of new version inputs or new
+main commits. Duplicate successful-main completions are no-ops after publication.
+The nightly version includes UTC planning time and the frozen source prefix;
+nightlies/custom prereleases do not become Latest or advance the stable base.
 
-## Build, signing, and publication
+## Build once and retain custody
 
-1. Planning freezes the source SHA and derives a version and changelog.
-2. Reusable Native CI runs its existing tests, vet, native GUI builds, packaging,
-   and installer smoke checks on Linux amd64, Windows amd64, macOS arm64, and
-   macOS amd64. It stamps the selected full release version into the CLI.
-3. Manual releases verify and reuse the exact native macOS artifacts from this
-   run. The handoff checks the artifact ID, archive digest, source revision,
-   clean build metadata, native slices, bundle identity, versions, and package
-   checksums before exposing signing credentials. Both architectures then pass
-   through the protected signing environment, Developer ID signing, Apple
-   notarization, and stapling. Xcode 26.3 is selected explicitly on both runners;
-   its installed command flags are checked before credential use.
-   Windows and Linux stay unsigned. The separate legacy `Signed packages`
-   workflow remains an explicit artifact-only signing operation.
-   Final acceptance checks both ZIP and DMG signatures, tickets, Gatekeeper,
-   native slices, and the version of the application copied from the mounted DMG.
-4. Publication verifies downloaded checksums, requires exactly one of every
-   expected package, combines the selected assets into one `SHA256SUMS`, and
-   creates the version tag at the frozen SHA. Only this job has repository write
-   permission. The tag is never forced or moved.
-5. Assets upload to a draft release. The complete remote asset-name inventory
-   must match the verified local set before publication. Stable versions become
-   Latest; custom prereleases and nightlies do not.
+The release graph serializes planning through publication across both channels
+and never cancels an active release. Native CI builds the versioned candidate once
+without signing secrets. Routine source CI may separately validate that commit;
+its development-version packages are not the release inputs.
 
-Each release has seven platform assets and a combined checksum file: two macOS
-ZIPs, two macOS drag-and-drop DMGs, a Windows portable ZIP and per-user installer,
-and a Linux TAR.GZ. Release notes explicitly identify which platforms are signed.
-Native package names retain `local` for unsigned packages and `release` for signed
-macOS packages; this suffix describes signing mode.
+After the native aggregate succeeds, a credential-free custody job creates a
+private draft named `apple-candidate-v<VERSION>`. It retains `candidate.json`,
+`plan.json`, notes, original `native.json` metadata and the four original Actions
+artifact ZIPs. The manifest binds repository, clean source, original run/attempt,
+version/channel and metadata hashes. Native artifact IDs and SHA-256 digests
+remain available after Actions artifact retention expires. A candidate draft is
+never published; its assets contain no credentials or raw client output.
+The draft reservation atomically includes the original plan, native inventory,
+notes and binding metadata in its body. If any initial asset upload is interrupted,
+the next run reconstructs that metadata and appends missing original archives
+with digest checks, without rebuilding. A completion marker is uploaded last;
+signing cannot start without complete custody. If an original archive was never
+retained and has already expired from Actions, the candidate stops explicitly.
+Reservation metadata is limited to 60,000 bytes and fails before creation if
+that bound is exceeded.
 
-The full SemVer appears in filenames, `--version`, and bundled build information.
-macOS bundle metadata and Windows installer version metadata use its numeric
-core, so `2.0.0-rc.1` has native metadata `2.0.0`. Prereleases sharing a core are
-therefore not distinguishable by the native numeric version fields alone.
-Explicitly versioned packaging rejects a reused binary with a different CLI
-version. A published package's build information also records its source revision.
+The signer verifies the original outer archive digest, its exact package entry
+set, inner checksums, regular paths, bundle identity/version, binary slices,
+Go build revision and clean-tree metadata before loading credentials. It does
+not build the executable again. Both source and original run identities are
+preserved during later continuation runs.
 
-Builds and publication are called in the same workflow run. They do not rely on a
-tag push starting another workflow: GitHub suppresses most events generated by
-`GITHUB_TOKEN`. See GitHub's [workflow trigger documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+Small sequence-numbered checkpoint manifests reference immutable SHA-256-addressed
+blob assets in that draft. Every safe receipt transition is acknowledged remotely
+before the next operation. Sequence forks, changed bytes, mismatched identities,
+missing checkpoints and corrupted blobs fail closed. The latest checkpoint uses
+explicit sequence order, not asset-ID magnitude. Draft storage is durable beyond
+Actions retention; administrators must not delete unresolved candidate drafts.
 
-## Nightly behavior
+## Apple stages and automatic continuation
 
-The schedule runs daily at **02:23 UTC**, using the default branch, which must
-remain `main`. There is no separate manual nightly input. Nightlies use versions
-such as `1.2.4-nightly.20261026022300.0123456789ab`; the core is the next patch
-after the highest stable tag, followed by the UTC planning timestamp and source
-SHA prefix.
+Each architecture preserves this topology:
 
-Planning searches all GitHub release pages for the newest published nightly.
-Drafts, ordinary custom prereleases, stable releases, and tags without published
-releases do not count. If that nightly resolves to the selected `main` SHA,
-planning reports a skip and starts no native builds, signing, or publication.
-A failed attempt does not advance this marker, so the next schedule can retry.
-API errors fail planning rather than pretending no previous nightly exists.
-An invalid or nonancestor nightly marker also fails explicitly.
+1. Sign the executable and app with Developer ID, secure timestamps and hardened
+   runtime. Verify expected team/authority and clean temporary credentials.
+2. Persist the descriptive signed app ZIP and upload intent, then submit once.
+   Persist its UUID immediately. Require matching Accepted diagnostics.
+3. Staple/validate the app and assess Gatekeeper. Retain its exact stapled bytes.
+4. Package that accepted app in the drag-and-drop DMG, sign and verify the image,
+   persist its upload bytes/intent, submit once and retain the second UUID.
+5. Require matching Accepted diagnostics, staple/validate the DMG and assess it.
+   Create the final ZIP from the stapled app and checksum final distributables.
 
-Nightlies publish versioned GitHub prereleases, never Latest, and all
-their packages are unsigned. The tooling never overwrites a published version.
-Signing credentials are never passed into nightly
-builds. GitHub schedules can be delayed or disabled by platform policy; this is
-not a guarantee of an exact wall-clock build time.
+Submission basenames include product, full version, architecture, source prefix,
+original run/attempt and stage. Submitted hashes differ from stapled download
+hashes. The UUID, source, original run, stage, filename, submitted hash, selected
+team/authority and state are bound together. Never import an unrelated receipt.
 
-## Conventional Commits and changelogs
+Private temporary files and an isolated temporary keychain keep credentials out
+of source, argv and public logs. Restore and verify the original user keychain
+search list; do not change default/system keychains. Cleanup failure blocks
+release. Safe operation labels and exit codes identify the failing signing stage;
+private tool output is not uploaded.
 
-The `conventional-commits` check validates both PR titles and every new nonmerge
-commit in a PR. Pushes to `main` check newly introduced nonmerge commits too.
-GitHub merge wrappers are excluded. Supported types are `build`, `chore`, `ci`,
-`docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, and `test`.
+`In Progress` returns a pending result rather than publication. The next scheduled
+run restores the original build and signed bytes, then queries/waits for the same
+UUID. Accepted stages restore their retained app/DMG without signing or uploading
+again. Missing UUIDs reconcile history by descriptive name, then require the
+original diagnostic hash/name/UUID binding. Ambiguous or absent history never
+authorizes another upload. Rejected, malformed or mismatched diagnostics block
+promotion. A client timeout is not an Apple rejection or permission to resubmit.
+Terminal rejection and invalid diagnostic identity leave blocking receipts.
+Only a diagnosed CloudKit connection failure with stapler exit 68 can continue
+automatically; a persistent counter permits at most three ticket attempts per
+stage. Other ticket failures stop rather than retry generically.
 
-```text
-feat(downloads): add retry control
-fix(storage): preserve partial downloads
-feat(api)!: rename response fields
-```
+`APPLE_QUALIFY_CONTINUATION=true` is an optional repository variable for hosted
+recovery qualification. A newly captured, durably retained UUID yields before
+waiting; continuation must use that UUID. This does not simulate acceptance or
+bypass any Apple gate. Clear the variable after recording recovery evidence.
 
-An optional scope and `!` are supported. A breaking change can alternatively use
-a `BREAKING CHANGE:` or `BREAKING-CHANGE:` footer; multiline migration guidance
-is preserved until the next footer. Descriptions must be nonempty, without
-leading or trailing whitespace. Set squash-merge messages to use the PR title.
+Successful architectures retain their exact final ZIP/DMG bytes across later
+continuations. Quarantine is preserved. No `spctl` disable, ad-hoc signature,
+quarantine removal or synthetic Apple response is an allowed release repair.
 
-Every release gets grouped Markdown changelog notes with source commit IDs:
-Breaking changes, Features, Bug fixes, Performance, Documentation, Build and CI,
-and Other changes. Manual notes cover the previous stable tag through the frozen
-source commit, including changes already previewed in custom prereleases.
-Nightly notes cover changes since the last published nightly; the first nightly
-starts at the latest stable tag. With no baseline tag, history is included.
-Historical nonconventional commits remain under Other changes; existing history
-does not need rewriting. This follows the [Conventional Commits specification](https://www.conventionalcommits.org/en/v1.0.0/).
+## Final acceptance and immutable publication
 
-## Activation requirements
+Signing runners verify final ZIP/DMG checksums, Developer ID/team, tickets,
+Gatekeeper, bundle metadata, exact slices and native CLI version. They mount the
+DMG read-only, copy its app to an isolated Applications directory and verify that
+installed copy, including ZIP/DMG executable equality and owned-mount cleanup.
+Fresh credential-free ARM and Intel runners repeat that acceptance against the
+retained final bytes. Both fresh receipts are bound to the original candidate
+and the verification run. Failed or incomplete acceptance cannot publish.
 
-This implementation is a local change until merged. No release, tag, signing
-submission, or repository-settings change was performed during implementation.
+The publisher requires both architectures' bound input receipts, verified app/DMG
+receipts, Accepted logs, signer acceptance and fresh native acceptance. It selects
+exactly seven payloads and one combined checksum file. Linux TAR.GZ, Windows ZIP
+and per-user setup EXE remain unsigned; both macOS ZIPs and DMGs are signed and
+notarized, including nightlies.
 
-1. Merge these workflows to `main`. Require **ci-required** and
-   **conventional-commits** on protected `main`, block force pushes, and prevent
-   unreviewed bypasses. CI checks alone cannot prevent an administrator from
-   bypassing branch policy. The repository was observed to have unprotected main
-   during implementation; manual publishing deliberately fails on unprotected
-   main rather than weakening the existing signing boundary.
-2. Configure the `release-signing` environment to allow only `main`, with its
-   required reviewers. Add `MACOS_CERTIFICATE_P12_BASE64`,
-   `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPLE_TEAM_ID`,
-   `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER` as environment
-   secrets. `MACOS_SIGN_IDENTITY` must be the matching Developer ID Application
-   identity. Use private credential entry, not workflow input fields.
-   The caller explicitly forwards these seven secret names to the reusable
-   macOS workflow, which declares each name as required. GitHub resolves the
-   environment values only after its approval gate. Declaring `environment`
-   in the called workflow alone leaves secrets empty; see
-   [GitHub's reusable workflow secret guidance](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow).
-   Required declarations catch missing caller mappings, while the signing
-   script separately rejects empty values. Native CI and scheduled nightlies
-   receive none of these secrets.
-3. Allow the publisher's declared `contents: write` permission. Tag rules must
-   permit this workflow to create new `v*` tags while preserving existing tags.
-   No personal access token is required by this implementation.
-4. Confirm the first hosted Native CI run, then dispatch a chosen custom
-   prerelease to qualify the full signing and publication path. Confirm the
-   scheduled run publishes once and skips its next unchanged-main execution.
+Publication atomically creates an unmoving `v*` tag at the frozen source, stages
+assets in a separate version draft and verifies every re-downloaded byte and the
+complete remote inventory before making it visible. A retry appends missing
+assets only. Existing different bytes, unexpected names or a changed source stop
+publication. There is no clobber or forced tag. A fully published identical release
+is verified read-only and succeeds idempotently. A lost response after publication
+can therefore be reconciled without rewriting the release. A durable completion
+marker closes candidate custody only after successful promotion.
 
-## Failure recovery
+## Evidence and operational recovery
 
-macOS signing uploads descriptive app and DMG basenames containing the version,
-architecture, source prefix, run ID, attempt, and stage. Each stage retains its
-exact signed upload bytes, a JSON receipt binding the source and submitted hash
-to the Apple UUID, and an allowlisted Apple diagnostic log. Final checksums are
-recorded separately because stapling changes bytes. These private CI artifacts
-are retained for seven days as `macos-notarization-*`, on failure as well as success;
-they are not public release assets. Raw client output and credentials are excluded.
+The private candidate draft is the recovery entry point. Actions also retains safe
+failure receipts for seven days. Keep raw client output, key material and private
+scratch out of evidence. Permanent credential, certificate, Apple rejection or
+ambiguous-submission failures require diagnosis; scheduled continuation cannot
+make those successful. Inspect the safe failure phase and exact retained UUID.
+Never delete a reservation or manually submit again to clear an unresolved run.
 
-The signer submits once, records the UUID, then waits for up to 30 minutes. Both
-the wait result and matching Apple log must say `Accepted`; missing, malformed,
-mismatched, pending, and rejected evidence cannot pass. Stapling and Gatekeeper
-must then pass, and keychain cleanup failure still fails the job.
-
-Do not rerun signing blindly. A later workflow attempt stops before signing,
-because a fresh runner cannot infer whether an earlier submission exists.
-Download the retained evidence and use the selected toolchain's `notarytool info`,
-`wait`, and `log` commands with the recorded UUID to reconcile it. If the response
-lost its UUID, reconcile Apple history against the retained basename and submitted
-hash first. Do not upload again merely because a client timed out. Local invocations
-also refuse a stage directory already reserved by a previous attempt.
-
-Build, test, or signing failures publish nothing. An upload failure leaves the
-version tag reserved and the release draft unpublished. Use GitHub Actions
-**Re-run failed jobs** only when signing has already succeeded, to reuse the
-successful planning/build/signing artifacts and resume that exact draft. The
-publisher lists authenticated releases, including drafts;
-the release-by-tag REST endpoint only returns published releases. See the
-[GitHub releases API](https://docs.github.com/en/rest/releases/releases).
-
-A retry checks that the existing lightweight tag still points to the planned
-SHA, replaces the expected draft assets, and verifies the full remote inventory.
-Extra remote assets, a different source tag, or an already published release
-stop the operation. Published releases are never overwritten by this tooling.
-If the remote edit succeeded but its response was lost, inspect the published
-release before retrying; an immutable-release rejection may indicate success.
-
-Re-running all jobs replans against reserved tags and intentionally fails for an
-existing manual version. If artifacts expired or a draft has unexpected assets,
-an administrator must reconcile that specific unpublished draft/tag before a new
-manual dispatch. Do not delete or move published version tags. A later nightly
-can retry the same source using a fresh timestamp without treating the failed
-draft as the last successful nightly.
-
-## Validation and remaining qualification
-
-Local release-planning tests exercise bump arithmetic, strict SemVer ordering,
-prerelease metadata, tag collisions, source ancestry, unchanged-nightly skipping,
-incremental notes, Conventional Commit enforcement, and multiline breaking notes.
-Shell fixtures exercise real packaging entry points with synthetic native tools,
-package/core version consistency, binary version mismatches, all-target asset
-selection, corrupt/missing/duplicate payloads, draft retries, immutable published
-releases, and paginated nightly-marker selection.
-
-Actionlint and ShellCheck validate all workflows and shell tooling. Local source
-checks do not qualify hosted GitHub execution, Windows/Intel runtime behavior,
-Apple credentials/notarization, or actual release publication. Those remain the
-first hosted prerelease and scheduled-run acceptance checks above.
-
-The local Go release tests passed with race detection and vet. All existing
-packaging and R1 shell regressions passed, alongside the new prerelease and
-publication fixtures. A real unsigned macOS arm64 `1.2.0-rc.1` package also built
-successfully: ZIP integrity and checksums passed, the mounted DMG contained the
-Applications shortcut, bundle metadata reported `1.2.0`, and its CLI reported
-`takedown version 1.2.0-rc.1`. The verification detached the disk image afterward.
-This exercised actual native packaging without signing or publication.
+Local fixtures exercise trust-origin refusal, exact CI gates, candidate/run/hash
+binding, state corruption/collision, pending/rejected diagnostics, submit-once
+recovery, cleanup, stapling/Gatekeeper and partial/immutable publication. They
+prove failure behavior only. Real hosted credentials, Apple Accepted diagnostics,
+tickets, installed-app results and public download verification must be reported
+separately with source, run, submission and asset evidence.

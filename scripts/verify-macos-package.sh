@@ -68,9 +68,10 @@ check_app "$WORK/Applications/takedown.app"
 cmp -s "$WORK/zip/takedown.app/Contents/MacOS/takedown" "$WORK/Applications/takedown.app/Contents/MacOS/takedown" || fail 'ZIP and installed DMG executables differ'
 if [[ -n ${NOTARY_EVIDENCE_DIR:-} ]]; then
   jq -n --arg version "$RELEASE_VERSION" --arg arch "$NOTARY_ARCH" \
+    --arg source "${NOTARY_SOURCE_SHA:?NOTARY_SOURCE_SHA is required}" --arg run "${GITHUB_RUN_ID:?}" --arg attempt "${GITHUB_RUN_ATTEMPT:?}" \
     --arg zip "$(shasum -a 256 "$PACKAGES/$BASE.zip" | awk '{print $1}')" \
     --arg dmg "$(shasum -a 256 "$PACKAGES/$BASE.dmg" | awk '{print $1}')" \
-    '{version:$version,architecture:$arch,zip_sha256:$zip,dmg_sha256:$dmg,checks:["checksums","Developer ID","stapling","Gatekeeper","copied app metadata and version","native slices","ZIP/DMG executable equality"]}' \
+    '{source_commit:$source,ci_run_id:$run,ci_run_attempt:$attempt,version:$version,architecture:$arch,zip_sha256:$zip,dmg_sha256:$dmg,checks:["checksums","Developer ID","stapling","Gatekeeper","copied app metadata and version","native slices","ZIP/DMG executable equality"]}' \
     > "$NOTARY_EVIDENCE_DIR/acceptance.json"
 fi
 echo 'PASS: final ZIP, mounted DMG and copied application signatures, tickets, Gatekeeper, metadata and native version'

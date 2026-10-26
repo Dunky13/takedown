@@ -23,7 +23,14 @@ esac
 mkdir "$NOTARY_STAGING_DIR" || fail 'staging directory must be fresh'
 stage=$NOTARY_STAGING_DIR
 artifact_name="unsigned-native-macOS-$runner_arch-$INPUT_SOURCE_SHA"
-gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$stage/artifacts.json"
+if [[ -n ${NOTARY_NATIVE_METADATA:-} ]]; then
+  [[ -f $NOTARY_NATIVE_METADATA && ! -L $NOTARY_NATIVE_METADATA && -f ${NOTARY_NATIVE_ARCHIVE:-} && ! -L $NOTARY_NATIVE_ARCHIVE ]] || fail 'durable native input missing'
+  # The candidate manifest hash and immutable draft asset bytes are checked by
+  # the orchestrator before this original Actions metadata is consumed.
+  jq '{artifacts:.}' "$NOTARY_NATIVE_METADATA" > "$stage/artifacts.json"
+else
+  gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$stage/artifacts.json"
+fi
 jq -s --arg name "$artifact_name" '[.[].artifacts[] | select(.name == $name)]' \
   "$stage/artifacts.json" > "$stage/matches.json"
 jq -e --arg sha "$INPUT_SOURCE_SHA" --argjson run "$GITHUB_RUN_ID" '
@@ -34,7 +41,11 @@ jq -e --arg sha "$INPUT_SOURCE_SHA" --argjson run "$GITHUB_RUN_ID" '
 ' "$stage/matches.json" >/dev/null || fail 'expected one unexpired artifact bound to this source and run'
 artifact_id=$(jq -r '.[0].id' "$stage/matches.json")
 artifact_digest=$(jq -r '.[0].digest' "$stage/matches.json")
-gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$stage/native-artifact.zip"
+if [[ -n ${NOTARY_NATIVE_METADATA:-} ]]; then
+  cp "$NOTARY_NATIVE_ARCHIVE" "$stage/native-artifact.zip"
+else
+  gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$stage/native-artifact.zip"
+fi
 archive_sha=$(shasum -a 256 "$stage/native-artifact.zip" | awk '{print $1}')
 [[ sha256:$archive_sha == "$artifact_digest" ]] || fail 'artifact archive digest mismatch'
 

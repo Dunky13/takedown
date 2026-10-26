@@ -165,8 +165,10 @@ echo 'PASS R1-03: simultaneous reservation loser fails, winner remains intact, u
   MOCK_DELETE_FAIL=false
   MOCK_RESTORE_FAIL=false
   MOCK_IGNORE_SET=false
+  MOCK_DEFAULT='/fixture/login.keychain-db'
   security() {
     case $1 in
+      default-keychain) printf '    "%s"\n' "$MOCK_DEFAULT" ;;
       delete-keychain) [[ $MOCK_DELETE_FAIL == false ]] || return 1; rm -- "$2" ;;
       list-keychains)
         [[ $2 == -d && $3 == user ]] || return 99
@@ -208,6 +210,9 @@ echo 'PASS R1-03: simultaneous reservation loser fails, winner remains intact, u
   printf '    "%s"\n' "$KEYCHAIN" >> "$MOCK_LIST"
   keychain_restore_search_list
   [[ ! -s $MOCK_LIST && ! -e $KEYCHAIN ]]
+  MOCK_DEFAULT='/fixture/changed.keychain-db'
+  if keychain_restore_search_list; then echo 'changed default keychain was ignored' >&2; exit 1; fi
+  MOCK_DEFAULT='/fixture/login.keychain-db'
   printf 'invalid unquoted snapshot\n' > "$MOCK_LIST"
   if keychain_capture_search_list; then echo 'invalid snapshot was accepted' >&2; exit 1; fi
 )
