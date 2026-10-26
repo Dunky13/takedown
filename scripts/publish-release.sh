@@ -21,7 +21,8 @@ prerelease=$(jq -r .prerelease "$PLAN/plan.json")
 go run -mod=readonly -p 2 ./cmd/releasectl validate-version --version "$version"
 precedence_version=${version%%+*}
 [[ ${version%%[-+]*} == "$package_version" && $tag == "v$version" ]] || fail 'inconsistent version plan'
-[[ $sha =~ ^[0-9a-f]{40}$ && $sha == "$EXPECTED_SHA" && $(git rev-parse HEAD) == "$sha" ]] || fail 'source SHA does not match plan and checkout'
+[[ $sha =~ ^[0-9a-f]{40}$ && $sha == "$EXPECTED_SHA" ]] || fail 'source SHA does not match plan and checkout'
+bash "$(dirname -- "$0")/release-source.sh" verify "$sha"
 if [[ $RELEASE_CHANNEL == nightly ]]; then
   [[ $precedence_version == *-nightly.* && $prerelease == true ]] || fail 'nightly must be a nightly prerelease'
 else
@@ -201,7 +202,7 @@ verify_remote() {
   fi
   while IFS= read -r name; do
     id=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' "$WORK/remote.json")
-    gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$id" > "$WORK/download"
+    gh api --allow-escape-sequences -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$id" > "$WORK/download"
     expected_hash=$(sha256sum "$WORK/assets/$name" | awk '{print $1}')
     remote_hash=$(sha256sum "$WORK/download" | awk '{print $1}')
     if [[ $expected_hash != "$remote_hash" ]] || ! cmp -s "$WORK/assets/$name" "$WORK/download"; then

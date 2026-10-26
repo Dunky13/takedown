@@ -12,33 +12,85 @@ trap 'rm -rf -- "$WORK"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 hash() { shasum -a 256 "$1" | awk '{print $1}'; }
+release_identity() {
+  gh api "repos/$GH_REPO/releases/$release_id" > "$WORK/exact-release.json"
+  jq -e --argjson id "$release_id" --arg tag "$NOTARY_STATE_TAG" --arg source "$release_source" \
+    '.id == $id and .draft == true and .tag_name == $tag and .target_commitish == $source and (.body|type == "string")' \
+    "$WORK/exact-release.json" >/dev/null || fail 'exact draft identity mismatch'
+  jq -j .body "$WORK/exact-release.json" > "$WORK/exact-body"
+  [[ $(hash "$WORK/exact-body") == "$release_body_sha" ]] || fail 'exact draft body mismatch'
+}
+cache_assets() {
+  [[ -n ${NOTARY_ASSET_CACHE:-} ]] || return 0
+  jq -n --argjson id "$release_id" --arg source "$release_source" --arg body "$release_body_sha" --slurpfile assets "$WORK/assets.json" \
+    '{release_id:$id,source:$source,body_sha256:$body,assets:$assets[0]}' > "$NOTARY_ASSET_CACHE.tmp"
+  mv "$NOTARY_ASSET_CACHE.tmp" "$NOTARY_ASSET_CACHE"
+}
 inventory() {
-  gh api --paginate "repos/$GH_REPO/releases?per_page=100" > "$WORK/releases.json"
-  jq -se --arg tag "$NOTARY_STATE_TAG" 'add | map(select(.tag_name == $tag)) |
-    if length == 1 and .[0].draft == true then .[0] else error("candidate draft missing or ambiguous") end' "$WORK/releases.json" > "$WORK/release.json"
-  release_id=$(jq -r .id "$WORK/release.json")
-  [[ $release_id =~ ^[1-9][0-9]*$ ]] || fail 'invalid draft id'
-  gh api --paginate "repos/$GH_REPO/releases/$release_id/assets?per_page=100" | jq -s 'add' > "$WORK/assets.json"
-  jq -e 'map(.name) | length == (unique | length)' "$WORK/assets.json" >/dev/null || fail 'duplicate draft assets'
+  release_id=${NOTARY_RELEASE_ID:-}
+  release_source=${NOTARY_RELEASE_SOURCE_SHA:-}
+  release_body_sha=${NOTARY_RELEASE_BODY_SHA256:-}
+  if [[ -z $release_id ]]; then
+    gh api --paginate "repos/$GH_REPO/releases?per_page=100" > "$WORK/releases.json"
+    jq -se --arg tag "$NOTARY_STATE_TAG" 'add | map(select(.tag_name == $tag)) |
+      if length == 1 and .[0].draft == true then .[0] else error("candidate draft missing or ambiguous") end' "$WORK/releases.json" > "$WORK/release.json"
+    release_id=$(jq -r .id "$WORK/release.json")
+    release_source=$(jq -r .target_commitish "$WORK/release.json")
+    jq -j .body "$WORK/release.json" > "$WORK/body"
+    release_body_sha=$(hash "$WORK/body")
+    [[ -z ${NOTARY_RELEASE_BODY_SHA256:-} || $release_body_sha == "$NOTARY_RELEASE_BODY_SHA256" ]] || fail 'draft body pin mismatch'
+    [[ -z ${NOTARY_RELEASE_SOURCE_SHA:-} || $release_source == "$NOTARY_RELEASE_SOURCE_SHA" ]] || fail 'draft source pin mismatch'
+  fi
+  [[ $release_id =~ ^[1-9][0-9]*$ && $release_source =~ ^[0-9a-f]{40}$ && $release_body_sha =~ ^[0-9a-f]{64}$ ]] || fail 'invalid draft identity pins'
+  release_identity
+  if [[ -n ${NOTARY_ASSET_CACHE:-} && -e $NOTARY_ASSET_CACHE ]]; then
+    [[ -f $NOTARY_ASSET_CACHE && ! -L $NOTARY_ASSET_CACHE ]] || fail 'invalid asset cache'
+    jq -e --argjson id "$release_id" --arg source "$release_source" --arg body "$release_body_sha" \
+      '.release_id == $id and .source == $source and .body_sha256 == $body' "$NOTARY_ASSET_CACHE" >/dev/null || fail 'asset cache binding mismatch'
+    jq .assets "$NOTARY_ASSET_CACHE" > "$WORK/assets.json"
+  else
+    gh api --paginate "repos/$GH_REPO/releases/$release_id/assets?per_page=100" | jq -s 'add' > "$WORK/assets.json"
+  fi
+  jq -e 'type == "array" and (map(.name) | length == (unique | length)) and
+    (map(.id) | length == (unique | length)) and all(.[];
+      (.id | type == "number" and . > 0 and floor == .) and
+      (.name | type == "string") and .state == "uploaded" and
+      (.size | type == "number" and . >= 0 and floor == .))' "$WORK/assets.json" >/dev/null || fail 'invalid or duplicate draft assets'
+  cache_assets
+}
+asset_receipt() {
+  local name=$1 size=$2 receipt=$3
+  jq -e --arg name "$name" --argjson size "$size" '
+    (.id | type == "number" and . > 0 and floor == .) and
+    .name == $name and .size == $size and .state == "uploaded"' "$receipt" >/dev/null || fail "invalid upload receipt: $name"
 }
 download() {
-  local name=$1 output=$2 id
-  id=$(jq -er --arg name "$name" '[.[] | select(.name == $name)] | if length == 1 then .[0].id else error("missing asset") end' "$WORK/assets.json")
-  gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$id" > "$output"
+  local name=$1 output=$2 id size
+  jq -e --arg name "$name" '[.[] | select(.name == $name)] | if length == 1 then .[0] else error("missing asset") end' "$WORK/assets.json" > "$WORK/asset.json"
+  id=$(jq -r .id "$WORK/asset.json"); size=$(jq -r .size "$WORK/asset.json")
+  release_identity
+  gh api --allow-escape-sequences -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$id" > "$output"
+  [[ $(wc -c < "$output") -eq $size ]] || fail "remote asset size differs: $name"
 }
 put() {
-  local name=$1 file=$2
+  local name=$1 file=$2 size encoded
+  [[ $name =~ ^[A-Za-z0-9._+-]+$ && -f $file && ! -L $file ]] || fail 'invalid asset name or file'
   if jq -e --arg name "$name" 'any(.[]; .name == $name)' "$WORK/assets.json" >/dev/null; then
     download "$name" "$WORK/existing"
     cmp -s "$file" "$WORK/existing" || fail "immutable asset collision: $name"
   else
-    # An asset-name collision is an error, never an overwrite or retry.
-    mkdir -p "$WORK/upload"
-    cp "$file" "$WORK/upload/$name"
-    gh release upload "$NOTARY_STATE_TAG" "$WORK/upload/$name" --repo "$GH_REPO" >/dev/null
-    inventory
+    # Use the exact release ID. Never retry a write with an uncertain result.
+    release_identity
+    size=$(wc -c < "$file")
+    encoded=$(jq -nr --arg name "$name" '$name | @uri')
+    gh api --method POST "https://uploads.github.com/repos/$GH_REPO/releases/$release_id/assets?name=$encoded" \
+      -H 'Content-Type: application/octet-stream' --input "$file" > "$WORK/upload-receipt.json"
+    asset_receipt "$name" "$size" "$WORK/upload-receipt.json"
+    jq --slurpfile asset "$WORK/upload-receipt.json" '. + $asset | if (map(.id)|length == (unique|length)) then . else error("upload ID collision") end' "$WORK/assets.json" > "$WORK/assets.tmp"
+    mv "$WORK/assets.tmp" "$WORK/assets.json"
     download "$name" "$WORK/uploaded"
     cmp -s "$file" "$WORK/uploaded" || fail "remote bytes differ: $name"
+    cache_assets
   fi
 }
 allowed() {

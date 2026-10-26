@@ -19,15 +19,19 @@ set -euo pipefail
 endpoint=${!#}
 printf '%s\n' "$*" >> "$MOCK_TEST_WORK/calls"
 case $endpoint in
+  */compare/*)
+    jq -n --arg source "$MOCK_SOURCE" '{base_commit:{sha:$source},merge_base_commit:{sha:$source},status:"identical"}' ;;
+  */releases/7)
+    jq -n --arg source "${MOCK_CANDIDATE_SOURCE:-$MOCK_SOURCE}" --rawfile body "$MOCK_TEST_WORK/reservation.json" '{id:7,draft:true,tag_name:"apple-candidate-v0.0.1",target_commitish:$source,body:$body}' ;;
   */branches/main) jq -n --arg sha "$MOCK_SOURCE" --argjson protected "$MOCK_PROTECTED" '{protected:$protected,commit:{sha:$sha}}' ;;
   *'/releases?per_page=100')
-    if [[ $MOCK_ACTIVE == true ]]; then jq -n --arg source "$MOCK_SOURCE" --rawfile body "$MOCK_TEST_WORK/reservation.json" '[{id:7,draft:true,tag_name:"apple-candidate-v0.0.1",target_commitish:$source,body:$body}]'
+    if [[ $MOCK_ACTIVE == true ]]; then jq -n --arg source "${MOCK_CANDIDATE_SOURCE:-$MOCK_SOURCE}" --rawfile body "$MOCK_TEST_WORK/reservation.json" '[{id:7,draft:true,tag_name:"apple-candidate-v0.0.1",target_commitish:$source,body:$body}]'
     elif [[ $MOCK_PUBLISHED == true ]]; then jq -n --arg source "$MOCK_SOURCE" '[{draft:false,prerelease:false,tag_name:"v0.0.1",target_commitish:$source}]'; else echo '[]'; fi ;;
   */releases/7/assets\?per_page=100)
-    find "$MOCK_TEST_WORK/remote" -type f | LC_ALL=C sort | while IFS= read -r file; do name=${file##*/}; jq -n --arg name "$name" '{id:$name,name:$name}'; done | jq -s . ;;
+    find "$MOCK_TEST_WORK/remote" -type f | LC_ALL=C sort | while IFS= read -r file; do name=${file##*/}; jq -n --arg name "$name" --argjson id "$(printf '%s' "$name" | cksum | awk '{print $1}')" --argjson size "$(wc -c < "$file")" '{id:$id,name:$name,size:$size,state:"uploaded"}'; done | jq -s . ;;
   */releases/assets/*) cat "$MOCK_TEST_WORK/remote/${endpoint##*/}" ;;
   */actions/runs/456)
-    jq -n --arg source "$MOCK_SOURCE" --arg repo "$GH_REPO" --arg branch "$MOCK_ORIGIN_BRANCH" '{head_sha:$source,head_branch:$branch,repository:{full_name:$repo},event:"workflow_run",path:".github/workflows/release.yml"}' ;;
+    jq -n --arg source "${MOCK_CANDIDATE_SOURCE:-$MOCK_SOURCE}" --arg repo "$GH_REPO" --arg branch "$MOCK_ORIGIN_BRANCH" '{head_sha:$source,head_branch:$branch,repository:{full_name:$repo},event:"workflow_run",path:".github/workflows/release.yml"}' ;;
   */check-runs\?per_page=100)
     jq -n --arg check "$MOCK_CHECK" --arg source "$MOCK_SOURCE" --argjson spoof "$MOCK_SPOOF" '{check_runs:([{id:1,name:"ci-required",app:{id:15368},check_suite:{id:10},head_sha:$source,status:"completed",conclusion:$check},{id:2,name:"conventional-commits",app:{id:15368},check_suite:{id:11},head_sha:$source,status:"completed",conclusion:"success"}] + (if $spoof then [{id:999,name:"ci-required",app:{id:15368},check_suite:{id:99},head_sha:$source,status:"completed",conclusion:"success"}] else [] end))}' ;;
   */actions/workflows/*/runs\?*)
@@ -91,6 +95,8 @@ grep -qx origin_run=456 "$GITHUB_OUTPUT"
 grep -qx origin_attempt=2 "$GITHUB_OUTPUT"
 [[ ! -f $TEST_WORK/plans ]]
 MOCK_ACTIVE=true MOCK_ORIGIN_BRANCH=feature reject
+MOCK_ACTIVE=true MOCK_CHECK=failure reject
+MOCK_ACTIVE=true MOCK_CHECK=failure MOCK_SPOOF=true reject
 cp "$TEST_WORK/reservation.json" "$TEST_WORK/good-reservation.json"
 jq '.plan.sha="corrupt"' "$TEST_WORK/good-reservation.json" > "$TEST_WORK/reservation.json"
 MOCK_ACTIVE=true reject
@@ -99,4 +105,27 @@ rm "$TEST_WORK/remote/candidate.json"
 MOCK_ACTIVE=true plan
 grep -qx resume=true "$GITHUB_OUTPUT"
 [[ ! -f $TEST_WORK/plans ]]
-echo 'PASS: 19 synthetic planning cases (trusted run suites, spoof refusal, original-candidate continuation, atomic reservation and corruption)'
+# A stale event still resumes the older product under explicitly qualified
+# workflow automation. All original manifests remain byte-for-byte sealed.
+export MOCK_REAL_GIT
+MOCK_REAL_GIT=$(command -v git)
+cat > "$TEST_WORK/bin/git" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == status && $2 == --porcelain ]]; then exit 0; fi
+exec "$MOCK_REAL_GIT" "$@"
+MOCK
+chmod +x "$TEST_WORK/bin/git"
+export MOCK_CANDIDATE_SOURCE
+MOCK_CANDIDATE_SOURCE=$(git rev-parse HEAD^)
+jq --arg source "$MOCK_CANDIDATE_SOURCE" '.plan.sha=$source | .candidate.source=$source' "$TEST_WORK/reservation.json" > "$TEST_WORK/old-reservation.json"
+jq .plan "$TEST_WORK/old-reservation.json" > "$TEST_WORK/original-plan.json"
+plan_digest=$(shasum -a 256 "$TEST_WORK/original-plan.json" | awk '{print $1}')
+jq --arg digest "$plan_digest" '.candidate.plan_sha256=$digest' "$TEST_WORK/old-reservation.json" > "$TEST_WORK/reservation.json"
+export RELEASE_AUTOMATION_SHA=$MOCK_SOURCE RELEASE_WORKFLOW_SHA=$MOCK_SOURCE
+MOCK_ACTIVE=true TRIGGER_SOURCE=$MOCK_CANDIDATE_SOURCE TRIGGER_RUN_ID=999 plan
+grep -qx resume=true "$GITHUB_OUTPUT"
+grep -qx "sha=$MOCK_CANDIDATE_SOURCE" "$GITHUB_OUTPUT"
+cmp "$TEST_WORK/original-plan.json" "$PLAN_DIR/plan.json"
+MOCK_ACTIVE=true MOCK_CHECK=failure reject
+RELEASE_WORKFLOW_SHA=$MOCK_CANDIDATE_SOURCE MOCK_ACTIVE=true reject
+echo 'PASS: synthetic planning regressions (trusted run suites, spoof refusal, original-candidate continuation, atomic reservation and corruption)'

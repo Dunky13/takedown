@@ -48,17 +48,19 @@ case ${!#} in
         else [$artifact] end)}'
     ;;
   */artifacts/456/zip)
+    [[ $* == *--allow-escape-sequences* ]] || exit 90
     if [[ ${FIXTURE_ARTIFACT_CASE:-valid} == corrupt ]]; then printf 'corrupt archive\n'
     else cat "$TEST_ROOT/artifact.zip"
     fi
     ;;
-  *) printf 'unexpected gh invocation\n' >&2; exit 1 ;;
+  *) exec bash "$TEST_ROOT/custody-gh.sh" "$@" ;;
 esac
 GH
 cat > "$TEST_ROOT/tools/git" <<'GIT'
 #!/usr/bin/env bash
 case "$1 $2" in
   'rev-parse HEAD') printf '%s\n' "${FIXTURE_CHECKOUT_SHA:-$INPUT_SOURCE_SHA}" ;;
+  'merge-base --is-ancestor') [[ ${FIXTURE_UNRELATED:-false} != true ]] || exit 1 ;;
   'status --porcelain') [[ ${FIXTURE_CHECKOUT_DIRTY:-false} != true ]] || printf ' M tracked-file\n' ;;
   *) exit 1 ;;
 esac
@@ -87,6 +89,7 @@ printf '%s: go1.26.10\n\tbuild\tvcs.revision=%s\n\tbuild\tvcs.modified=%s\n' \
 GO
 chmod +x "$TEST_ROOT/tools/"*
 export PATH="$TEST_ROOT/tools:$PATH"
+cp "$ROOT/scripts/testdata/apple-custody-gh.sh" "$TEST_ROOT/custody-gh.sh"
 case_number=0
 run_case() {
   case_number=$((case_number + 1))
@@ -105,9 +108,22 @@ jq -e --arg source "$INPUT_SOURCE_SHA" '.source==$source and .artifact_id=="456"
   .architecture=="arm64" and .bundle_id=="io.github.dunky13.takedown" and
   (.binary_sha256|test("^[0-9a-f]{64}$"))' "$NOTARY_STAGING_DIR/input.json" >/dev/null
 grep -Fxq "binary=$NOTARY_STAGING_DIR/extracted/takedown.app/Contents/MacOS/takedown" "$GITHUB_OUTPUT"
+# Explicit automation descendants retain identical original artifact/receipt
+# bytes and must requalify against their own successful main-push CI suites.
+cp "$NOTARY_STAGING_DIR/input.json" "$TEST_ROOT/original-input.json"
+cp "$NOTARY_STAGING_DIR/artifacts.json" "$TEST_ROOT/original-artifacts.json"
+export RELEASE_AUTOMATION_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+export RELEASE_WORKFLOW_SHA=$RELEASE_AUTOMATION_SHA FIXTURE_CHECKOUT_SHA=$RELEASE_AUTOMATION_SHA
+export MOCK_AUTOMATION_SHA=$RELEASE_AUTOMATION_SHA GH_REPO=$GITHUB_REPOSITORY MOCK_STATE=$TEST_ROOT
+run_case
+cmp "$TEST_ROOT/original-input.json" "$NOTARY_STAGING_DIR/input.json"
+MOCK_CHECK=failure reject 'required check is not successful'
+FIXTURE_UNRELATED=true reject 'product source is not an ancestor'
+RELEASE_WORKFLOW_SHA=$INPUT_SOURCE_SHA reject 'explicit workflow SHA'
+unset RELEASE_AUTOMATION_SHA RELEASE_WORKFLOW_SHA FIXTURE_CHECKOUT_SHA
 # Durable custody is usable after the original Actions artifact is unavailable;
 # its original digest/run metadata still governs the exact retained archive.
-jq '.artifacts' "$NOTARY_STAGING_DIR/artifacts.json" > "$TEST_ROOT/native.json"
+jq '.artifacts' "$TEST_ROOT/original-artifacts.json" > "$TEST_ROOT/native.json"
 cp "$TEST_ROOT/artifact.zip" "$TEST_ROOT/durable.zip"
 export NOTARY_NATIVE_METADATA="$TEST_ROOT/native.json" NOTARY_NATIVE_ARCHIVE="$TEST_ROOT/durable.zip"
 FIXTURE_ARTIFACT_CASE=missing run_case
