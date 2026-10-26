@@ -52,10 +52,17 @@ The workflow must first be present on the default branch.
 2. Reusable Native CI runs its existing tests, vet, native GUI builds, packaging,
    and installer smoke checks on Linux amd64, Windows amd64, macOS arm64, and
    macOS amd64. It stamps the selected full release version into the CLI.
-3. Manual releases then rebuild both macOS architectures through the protected
-   signing environment, Developer ID signing, Apple notarization, and stapling.
+3. Manual releases verify and reuse the exact native macOS artifacts from this
+   run. The handoff checks the artifact ID, archive digest, source revision,
+   clean build metadata, native slices, bundle identity, versions, and package
+   checksums before exposing signing credentials. Both architectures then pass
+   through the protected signing environment, Developer ID signing, Apple
+   notarization, and stapling. Xcode 26.3 is selected explicitly on both runners;
+   its installed command flags are checked before credential use.
    Windows and Linux stay unsigned. The separate legacy `Signed packages`
    workflow remains an explicit artifact-only signing operation.
+   Final acceptance checks both ZIP and DMG signatures, tickets, Gatekeeper,
+   native slices, and the version of the application copied from the mounted DMG.
 4. Publication verifies downloaded checksums, requires exactly one of every
    expected package, combines the selected assets into one `SHA256SUMS`, and
    creates the version tag at the frozen SHA. Only this job has repository write
@@ -164,10 +171,32 @@ submission, or repository-settings change was performed during implementation.
 
 ## Failure recovery
 
+macOS signing uploads descriptive app and DMG basenames containing the version,
+architecture, source prefix, run ID, attempt, and stage. Each stage retains its
+exact signed upload bytes, a JSON receipt binding the source and submitted hash
+to the Apple UUID, and an allowlisted Apple diagnostic log. Final checksums are
+recorded separately because stapling changes bytes. These private CI artifacts
+are retained for seven days as `macos-notarization-*`, on failure as well as success;
+they are not public release assets. Raw client output and credentials are excluded.
+
+The signer submits once, records the UUID, then waits for up to 30 minutes. Both
+the wait result and matching Apple log must say `Accepted`; missing, malformed,
+mismatched, pending, and rejected evidence cannot pass. Stapling and Gatekeeper
+must then pass, and keychain cleanup failure still fails the job.
+
+Do not rerun signing blindly. A later workflow attempt stops before signing,
+because a fresh runner cannot infer whether an earlier submission exists.
+Download the retained evidence and use the selected toolchain's `notarytool info`,
+`wait`, and `log` commands with the recorded UUID to reconcile it. If the response
+lost its UUID, reconcile Apple history against the retained basename and submitted
+hash first. Do not upload again merely because a client timed out. Local invocations
+also refuse a stage directory already reserved by a previous attempt.
+
 Build, test, or signing failures publish nothing. An upload failure leaves the
 version tag reserved and the release draft unpublished. Use GitHub Actions
-**Re-run failed jobs** to reuse the successful planning/build artifacts and resume
-that exact draft. The publisher lists authenticated releases, including drafts;
+**Re-run failed jobs** only when signing has already succeeded, to reuse the
+successful planning/build/signing artifacts and resume that exact draft. The
+publisher lists authenticated releases, including drafts;
 the release-by-tag REST endpoint only returns published releases. See the
 [GitHub releases API](https://docs.github.com/en/rest/releases/releases).
 

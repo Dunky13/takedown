@@ -20,8 +20,10 @@ expect_failure() {
 expect_failure 'VERSION must be a numeric x.y.z' env MODE=local VERSION='bad;value' bash scripts/package-macos.sh
 expect_failure 'Linux release signing has no configured trust policy' env MODE=release bash scripts/package-linux.sh
 if [[ $(uname -s) == Darwin ]]; then
-  expect_failure 'missing required secret/configuration: MACOS_CERTIFICATE_P12_BASE64' \
+  expect_failure 'release signing requires a verified prebuilt BINARY' \
     env -i PATH="$PATH" MODE=release bash scripts/package-macos.sh
+  expect_failure 'missing required secret/configuration: MACOS_CERTIFICATE_P12_BASE64' \
+    env -i PATH="$PATH" BINARY="$ROOT/scripts/test-packaging.sh" MODE=release bash scripts/package-macos.sh
 fi
 # Test actual installer integration using a harmless payload and a prefix with spaces.
 FIXTURE="$WORK/payload"

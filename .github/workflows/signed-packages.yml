@@ -21,12 +21,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  native:
+    if: inputs.authorize_signing && github.ref == 'refs/heads/main' && github.ref_protected
+    uses: ./.github/workflows/ci.yml
+    with:
+      checkout_ref: ${{ github.sha }}
+      package_version: ${{ inputs.version }}
+      release_version: ${{ inputs.version }}
+
   package:
+    needs: native
     # Environment must separately enforce main-only deployment and required reviewers.
     # No PR event, arbitrary ref input, release upload, repository/package write token.
     if: inputs.authorize_signing && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ${{ matrix.os }}
     environment: release-signing
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -53,12 +65,40 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           [[ $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+      - name: Verify macOS toolchain and native build before credential use
+        if: runner.os == 'macOS'
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SOURCE_SHA: ${{ github.sha }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          NOTARY_ARCH: arm64
+          NOTARY_STAGING_DIR: ${{ runner.temp }}/signing-input
+          DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+        run: |
+          [[ $GITHUB_RUN_ATTEMPT == 1 ]] || { echo 'Reconcile retained Apple receipts before retrying a signing stage; do not resubmit from a fresh runner.' >&2; exit 1; }
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun notarytool --version
+          xcrun notarytool submit --help | grep -q -- '--wait/--no-wait'
+          xcrun notarytool wait --help | grep -q -- '--timeout'
+          xcrun notarytool log --help | grep -q 'output-path'
+          xcrun --find stapler
+          bash scripts/prepare-macos-signing.sh
       - name: macOS signed and notarized packages
         if: runner.os == 'macOS'
         shell: bash
         env:
+          BINARY: ${{ steps.source.outputs.binary }}
           VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ inputs.version }}
           MODE: release
+          NOTARY_SOURCE_SHA: ${{ github.sha }}
+          NOTARY_ARCH: arm64
+          NOTARY_EVIDENCE_DIR: ${{ runner.temp }}/notary-evidence
+          DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
@@ -66,7 +106,11 @@ jobs:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: bash scripts/package-macos.sh
+        run: |
+          mkdir -p "$NOTARY_EVIDENCE_DIR"
+          cp "$RUNNER_TEMP/signing-input/input.json" "$NOTARY_EVIDENCE_DIR/input.json"
+          bash scripts/package-macos.sh
+          bash scripts/verify-macos-package.sh
       - name: Windows packaging prerequisites
         if: runner.os == 'Windows'
         shell: pwsh
@@ -104,5 +148,20 @@ jobs:
             dist/packages/**/*.exe
             dist/packages/**/SHA256SUMS
           if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Preserve allowlisted Apple receipts and diagnostics
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: macos-notarization-manual-${{ runner.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/notary-evidence/input.json
+            ${{ runner.temp }}/notary-evidence/acceptance.json
+            ${{ runner.temp }}/notary-evidence/*/receipt.json
+            ${{ runner.temp }}/notary-evidence/*/apple-log.json
+            ${{ runner.temp }}/notary-evidence/app/*.zip
+            ${{ runner.temp }}/notary-evidence/dmg/*.dmg
+          if-no-files-found: warn
           retention-days: 7
           compression-level: 0
