@@ -64,8 +64,12 @@ The GUI and native packages use the original archive/download icon in
 [`assets/`](../assets/). The SVG is the editable source; PNG, ICO, ICNS, and the
 Windows resource object are generated assets. See the asset instructions there
 before regenerating them. The README uses the same PNG as the GUI.
-Linux CI regenerates the assets in memory and compares their bytes without
-rewriting the checkout.
+Every native CI target regenerates the assets in memory and compares their bytes
+without rewriting the checkout. Generator compilation pins floating-point
+operation behavior as well as the Go version, so architecture-specific fused
+multiply-add instructions cannot change the rasterized pixels. This setting
+applies only to artwork generation; normal application builds use their usual
+compiler settings.
 
 Packages carry the project's Apache 2.0 `LICENSE` and `NOTICE`, together with
 `THIRD_PARTY_NOTICES.md` for dependencies that retain their own licenses. Changes

@@ -51,8 +51,12 @@ The package version <code>0.0.0</code> denotes a development build, not a releas
 <a href="../assets/"><code>assets/</code></a>. The SVG is the editable source; PNG, ICO, ICNS, and the
 Windows resource object are generated assets. See the asset instructions there
 before regenerating them. The README uses the same PNG as the GUI.
-Linux CI regenerates the assets in memory and compares their bytes without
-rewriting the checkout.</p>
+Every native CI target regenerates the assets in memory and compares their bytes
+without rewriting the checkout. Generator compilation pins floating-point
+operation behavior as well as the Go version, so architecture-specific fused
+multiply-add instructions cannot change the rasterized pixels. This setting
+applies only to artwork generation; normal application builds use their usual
+compiler settings.</p>
 <p>Packages carry the project's Apache 2.0 <code>LICENSE</code> and <code>NOTICE</code>, together with
 <code>THIRD_PARTY_NOTICES.md</code> for dependencies that retain their own licenses. Changes
 to dependencies or bundled assets require checking those notices as well as the

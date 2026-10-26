@@ -1,6 +1,7 @@
 //go:build ignore
 
-// Run from the repository root: go run -mod=readonly -p 2 ./assets/generate.go
+// Run from the repository root:
+// go run -mod=readonly -p 2 -gcflags=all=-d=fmahash=n ./assets/generate.go
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 
 	"github.com/fyne-io/oksvg"
 	"github.com/srwiley/rasterx"
@@ -21,6 +23,8 @@ import (
 )
 
 var sizes = []int{16, 24, 32, 48, 64, 128, 256, 512, 1024}
+
+const generatorCompilerFlags = "all=-d=fmahash=n"
 
 func main() {
 	check := flag.Bool("check", false, "verify generated files without modifying the checkout")
@@ -34,6 +38,15 @@ func main() {
 func generate(check bool) error {
 	if runtime.Version() != "go1.26.10" {
 		return fmt.Errorf("Go 1.26.10 is required for reproducible icon generation (running %s)", runtime.Version())
+	}
+	// Go may fuse multiply-add operations differently across architectures.
+	// rasterx's curve rasterization changes pixels under FMA, so require the
+	// pinned generator-only compilation setting before reading or writing assets.
+	info, ok := debug.ReadBuildInfo()
+	if !ok || !hasGeneratorCompilerFlags(info) {
+		return fmt.Errorf("icon generation requires -gcflags=%s; run from the repository root:\n"+
+			"go run -mod=readonly -p 2 -gcflags=%s ./assets/generate.go%s",
+			generatorCompilerFlags, generatorCompilerFlags, checkArgument(check))
 	}
 	svg, err := os.ReadFile("assets/icon.svg")
 	if err != nil {
@@ -119,6 +132,22 @@ func generate(check bool) error {
 		fmt.Printf("Generated %d icon assets from assets/icon.svg.\n", len(paths))
 	}
 	return nil
+}
+
+func hasGeneratorCompilerFlags(info *debug.BuildInfo) bool {
+	for _, setting := range info.Settings {
+		if setting.Key == "-gcflags" {
+			return setting.Value == generatorCompilerFlags
+		}
+	}
+	return false
+}
+
+func checkArgument(check bool) string {
+	if check {
+		return " -check"
+	}
+	return ""
 }
 
 // ICO uses 32-bit bottom-up BGRA DIBs with transparency masks at sizes below
