@@ -128,6 +128,7 @@ jobs:
           bash scripts/test-apple-release-state.sh
           bash scripts/test-apple-custody-recovery.sh
           bash scripts/test-prepare-apple-release.sh
+          bash scripts/test-release-source.sh
           bash scripts/test-apple-continuation.sh
       - name: Offline Apple submission and artifact handoff regressions
         if: runner.os == 'macOS'

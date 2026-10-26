@@ -3,30 +3,23 @@
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 TEST_WORK=$(mktemp -d "${TMPDIR:-/tmp}/takedown-state-tests.XXXXXX")
-trap 'rm -rf -- "$TEST_WORK"' EXIT
+cleanup() {
+  result=$?
+  if [[ $result != 0 ]]; then
+    [[ ! -f ${MOCK_STATE:-}/log ]] || cat "$MOCK_STATE/log" >&2
+    [[ ! -f $TEST_WORK/log ]] || cat "$TEST_WORK/log" >&2
+  fi
+  rm -rf -- "$TEST_WORK"
+}
+trap cleanup EXIT
 mkdir "$TEST_WORK/bin" "$TEST_WORK/remote" "$TEST_WORK/evidence"
 export MOCK_REMOTE="$TEST_WORK/remote" GH_REPO=fixture/takedown NOTARY_STATE_TAG=apple-candidate-v1.2.3
 export NOTARY_SOURCE_SHA=1111111111111111111111111111111111111111 RELEASE_VERSION=1.2.3 NOTARY_ARCH=arm64 GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=1
-cat > "$TEST_WORK/bin/gh" <<'MOCK'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ $1 == release && $2 == upload ]]; then
-  [[ $* != *--clobber* ]]
-  file=$4; name=${file##*/}
-  [[ ! -e $MOCK_REMOTE/$name ]] || exit 9
-  cp "$file" "$MOCK_REMOTE/$name"
-elif [[ $1 == api ]]; then
-  endpoint=${!#}
-  case $endpoint in
-    *'/releases?per_page=100') printf '[{"id":7,"draft":true,"tag_name":"%s"}]\n' "$NOTARY_STATE_TAG" ;;
-    */releases/7/assets\?per_page=100)
-      find "$MOCK_REMOTE" -type f | LC_ALL=C sort | while IFS= read -r file; do name=${file##*/}; jq -n --arg name "$name" '{id:$name,name:$name}'; done | jq -s . ;;
-    */releases/assets/*) cat "$MOCK_REMOTE/${endpoint##*/}" ;;
-    *) echo "unexpected API: $endpoint" >&2; exit 99 ;;
-  esac
-else exit 99
-fi
-MOCK
+export MOCK_STATE="$TEST_WORK/state"
+mkdir -p "$MOCK_STATE"
+ln -s "$MOCK_REMOTE" "$MOCK_STATE/assets"
+jq -n --arg tag "$NOTARY_STATE_TAG" --arg source "$NOTARY_SOURCE_SHA" '{id:7,draft:true,tag_name:$tag,target_commitish:$source,body:"sealed"}' > "$MOCK_STATE/release.json"
+cp "$ROOT/scripts/testdata/apple-custody-gh.sh" "$TEST_WORK/bin/gh"
 chmod +x "$TEST_WORK/bin/gh"
 export PATH="$TEST_WORK/bin:$PATH"
 jq -n --arg source "$NOTARY_SOURCE_SHA" --arg version "$RELEASE_VERSION" --arg repo "$GH_REPO" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" '{schema:1,source:$source,version:$version,repository:$repo,run_id:$run,run_attempt:$attempt}' > "$MOCK_REMOTE/candidate.json"
@@ -57,4 +50,19 @@ reject restore "$TEST_WORK/corrupt"
 printf 'PRIVATE-SENTINEL\n' > "$TEST_WORK/evidence/credential.p8"
 reject save "$TEST_WORK/evidence"
 [[ -z $(find "$MOCK_REMOTE" -name '*credential*' -print) ]]
-echo 'PASS: 10 synthetic custody cases (restore, sequence, run/arch binding, collision, fork, corruption, allowlist)'
+printf 'same bytes\n' > "$TEST_WORK/upload"
+MOCK_STALE_UPLOAD=true state put stale.txt "$TEST_WORK/upload"
+for filter in '.id=0' '.name="wrong"' '.size=0' '.state="starter"'; do
+  name="bad-$(printf '%s' "$filter" | cksum | awk '{print $1}').txt"
+  MOCK_UPLOAD_FILTER="$filter" reject put "$name" "$TEST_WORK/upload"
+done
+MOCK_CHANGED_BYTES=true reject put changed.txt "$TEST_WORK/upload"
+MOCK_LOST_RESPONSE=true reject put interrupted.txt "$TEST_WORK/upload"
+state put interrupted.txt "$TEST_WORK/upload"
+# Successful recovery reads existing bytes and never retries the POST.
+[[ $(grep -c 'POST .*name=interrupted.txt' "$MOCK_STATE/calls") == 1 ]]
+NOTARY_RELEASE_ID=8 reject inventory
+NOTARY_RELEASE_BODY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa reject inventory
+MOCK_REQUIRE_BINARY=true state get interrupted.txt "$TEST_WORK/recovered"
+cmp "$TEST_WORK/upload" "$TEST_WORK/recovered"
+echo 'PASS: offline custody restore/sequence/run/arch, collision/fork/corruption/allowlist, stale uploads, receipt identity, interrupted writes and binary downloads'

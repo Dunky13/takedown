@@ -85,11 +85,46 @@ retained and has already expired from Actions, the candidate stops explicitly.
 Reservation metadata is limited to 60,000 bytes and fails before creation if
 that bound is exceeded.
 
+Custody validates and retains the release-creation response's numeric ID, draft
+status, full tag, target commit and exact sealed body. A continuation discovers
+exactly one full-tag reservation, then retains its ID. Exact GET-by-ID checks bind
+every custody operation to that reservation. The ID and body digest also flow
+through the signing, fresh-acceptance, readiness and publishing jobs. A newly
+created reservation never needs to appear immediately in a release list.
+
+Uploads use the release ID and the REST octet-stream endpoint. Each response must
+contain the expected name, a positive numeric asset ID, exact byte size and
+`uploaded` state; downloading that asset ID must reproduce the original bytes.
+Custody takes one initial asset inventory, then extends a private, reservation-bound
+inventory with verified upload receipts. It never relists to rediscover a known
+write, overwrites assets, or blindly retries an uncertain upload. A later run may
+reconcile an interrupted upload by listing and comparing retained bytes; any
+collision or changed seal fails closed. Binary API responses explicitly use the
+supported `gh api --allow-escape-sequences` flag so ZIP and state downloads retain
+arbitrary bytes.
+
 The signer verifies the original outer archive digest, its exact package entry
 set, inner checksums, regular paths, bundle identity/version, binary slices,
 Go build revision and clean-tree metadata before loading credentials. It does
 not build the executable again. Both source and original run identities are
 preserved during later continuation runs.
+
+Release automation has a separate, explicit identity. Planning, custody, signing,
+fresh acceptance, readiness and publication check out the immutable release
+workflow `github.sha` with full history. Native product builds still check out the
+original planned source. `release-source.sh` requires the product source to be an
+ancestor of the automation pin, a clean checkout at that pin, protected-main
+membership, and exact successful `ci.yml` and `conventional-commits.yml` main-push
+runs and their required-check suites. Those checks also run on resume; a different
+revision cannot silently become trusted automation. New product planning still
+requires current main and the triggering native run. An older unresolved candidate
+retains priority over a newer completion event.
+
+`RELEASE_AUTOMATION_SHA` must equal the separately supplied workflow SHA
+`RELEASE_WORKFLOW_SHA`. Calls without that explicit automation pin keep the legacy
+exact-product-checkout requirement. The candidate retains a separate append-only
+`automation-<SHA>.json` binding; automation changes never alter original candidate,
+input, Apple receipt, version, run/attempt, artifact ID or digest bytes.
 
 Small sequence-numbered checkpoint manifests reference immutable SHA-256-addressed
 blob assets in that draft. Every safe receipt transition is acknowledged remotely

@@ -47,12 +47,14 @@ if [[ $1 == api ]]; then
     if [[ ${MOCK_EXTRA_ASSET:-false} == true ]]; then
       echo '[{"id":999,"name":"unexpected.exe","state":"uploaded"}]'
     fi
-  elif [[ $2 == -H && $3 == 'Accept: application/octet-stream' ]]; then
-    id=${4##*/}
+  elif [[ $2 == --allow-escape-sequences && $3 == -H && $4 == 'Accept: application/octet-stream' ]]; then
+    id=${5##*/}
     [[ -f $MOCK_STATE/bytes/$id ]] || exit 1
     cat "$MOCK_STATE/bytes/$id"
   elif [[ $2 == */git/ref/tags/* && -f $MOCK_STATE/ref ]]; then
     cat "$MOCK_STATE/ref"
+  elif [[ ${MOCK_AUTOMATION_SHA:-} != '' && ( $2 == */branches/main || $2 == */compare/* || $2 == --paginate ) ]]; then
+    exec bash "$MOCK_AUTOMATION_FIXTURE" "$@"
   else
     printf 'gh: Not Found (HTTP 404)\n' >&2
     exit 1
@@ -182,12 +184,12 @@ publish
 grep -Fq -- '--latest=false' "$MOCK_STATE/calls"
 grep -Fq -- "--target $EXPECTED_SHA" "$MOCK_STATE/calls"
 [[ $(jq -r .draft "$MOCK_STATE/release") == false && $(jq length "$MOCK_STATE/assets") == 8 ]]
-[[ $(grep -c '^api -H' "$MOCK_STATE/calls") == 8 ]]
+[[ $(grep -c '^api --allow-escape-sequences -H' "$MOCK_STATE/calls") == 8 ]]
 # An identical published release is a read-only success, including byte downloads.
 clear_calls
 publish
 no_writes
-[[ $(grep -c '^api -H' "$MOCK_STATE/calls") == 8 ]]
+[[ $(grep -c '^api --allow-escape-sequences -H' "$MOCK_STATE/calls") == 8 ]]
 grep -q 'Already published' "$WORK/log"
 # A published release with changed bytes must fail without mutation.
 printf corruption >> "$MOCK_STATE/bytes/100"
@@ -240,7 +242,7 @@ grep -q '^release upload' "$MOCK_STATE/calls"
 [[ $(jq -r .draft "$MOCK_STATE/release") == false && $(jq length "$MOCK_STATE/assets") == 8 ]]
 [[ $(hash "$MOCK_STATE/bytes/100") == "$before" && $(grep -c '^release upload' "$MOCK_STATE/calls") == 7 ]]
 if grep '^release upload' "$MOCK_STATE/calls" | grep -Fq "/$existing"; then exit 1; fi
-[[ $(grep -c '^api -H' "$MOCK_STATE/calls") == 9 ]] # existing byte, then all eight
+[[ $(grep -c '^api --allow-escape-sequences -H' "$MOCK_STATE/calls") == 9 ]] # existing byte, then all eight
 
 reset_fixture manual
 partial_draft
@@ -429,3 +431,23 @@ printf '[]\n' > "$WORK/releases.json"
 printf 'invalid JSON\n' > "$WORK/releases.json"
 if bash scripts/select-last-nightly.sh "$WORK/releases.json" >/dev/null 2>&1; then exit 1; fi
 printf 'PASS: synthetic publication integrity, append-only recovery, remote bytes, collisions, immutable idempotence, bound Apple evidence, signed nightlies, and nightly marker selection\n'
+
+reset_fixture manual
+export MOCK_AUTOMATION_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+export RELEASE_AUTOMATION_SHA=$MOCK_AUTOMATION_SHA RELEASE_WORKFLOW_SHA=$MOCK_AUTOMATION_SHA
+export MOCK_AUTOMATION_FIXTURE="$PWD/scripts/testdata/apple-custody-gh.sh" MOCK_REAL_GIT
+MOCK_REAL_GIT=$(command -v git)
+cat > "$WORK/mock-bin/git" <<'MOCK'
+#!/usr/bin/env bash
+case "$1 $2" in
+  'rev-parse HEAD') echo "$MOCK_AUTOMATION_SHA" ;;
+  'status --porcelain') exit 0 ;;
+  'merge-base --is-ancestor') exit 0 ;;
+  *) exec "$MOCK_REAL_GIT" "$@" ;;
+esac
+MOCK
+chmod +x "$WORK/mock-bin/git"
+publish
+jq -e --arg sha "$EXPECTED_SHA" '.target_commitish==$sha and .draft==false' "$MOCK_STATE/release" >/dev/null
+if MOCK_CHECK=failure publish; then echo 'publisher accepted unqualified automation' >&2; exit 1; fi
+echo 'PASS: publisher retains original product source under separately qualified automation'

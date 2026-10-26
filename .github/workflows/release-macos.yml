@@ -6,6 +6,15 @@ on:
       checkout_ref:
         required: true
         type: string
+      automation_ref:
+        required: true
+        type: string
+      release_id:
+        required: true
+        type: string
+      release_body_sha256:
+        required: true
+        type: string
       package_version:
         required: true
         type: string
@@ -40,6 +49,13 @@ on:
       APPLE_API_ISSUER:
         required: true
 
+env:
+  RELEASE_AUTOMATION_SHA: ${{ inputs.automation_ref }}
+  RELEASE_WORKFLOW_SHA: ${{ github.sha }}
+  NOTARY_RELEASE_ID: ${{ inputs.release_id }}
+  NOTARY_RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
+  NOTARY_RELEASE_SOURCE_SHA: ${{ inputs.checkout_ref }}
+
 permissions:
   contents: read
 
@@ -51,6 +67,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      checks: read
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -78,7 +95,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          ref: ${{ inputs.checkout_ref }}
+          ref: ${{ inputs.automation_ref }}
+          fetch-depth: 0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26.10'
@@ -142,6 +160,8 @@ jobs:
     permissions:
       # GitHub draft assets require push-capable access; no Apple secrets here.
       contents: write
+      actions: read
+      checks: read
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -156,7 +176,14 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          ref: ${{ inputs.checkout_ref }}
+          ref: ${{ inputs.automation_ref }}
+          fetch-depth: 0
+      - name: Qualify pinned automation before fresh acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRODUCT_SHA: ${{ inputs.checkout_ref }}
+        run: bash scripts/release-source.sh verify "$PRODUCT_SHA"
       - name: Install and assess exact final bytes on fresh native runner
         env:
           GH_TOKEN: ${{ github.token }}
@@ -186,13 +213,21 @@ jobs:
     permissions:
       contents: write
       actions: read
+      checks: read
     outputs:
       ready: ${{ steps.check.outputs.ready }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          ref: ${{ inputs.checkout_ref }}
+          ref: ${{ inputs.automation_ref }}
+          fetch-depth: 0
+      - name: Qualify pinned automation before readiness
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRODUCT_SHA: ${{ inputs.checkout_ref }}
+        run: bash scripts/release-source.sh verify "$PRODUCT_SHA"
       - name: Require both architecture checkpoints
         id: check
         env:

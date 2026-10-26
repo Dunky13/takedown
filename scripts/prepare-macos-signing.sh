@@ -13,7 +13,8 @@ done
 [[ $GITHUB_RUN_ID =~ ^[1-9][0-9]*$ && $GITHUB_RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]] || fail 'invalid run identity'
 [[ $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail 'invalid package version'
 [[ $RELEASE_VERSION =~ ^[0-9A-Za-z.+-]+$ && ${RELEASE_VERSION%%[-+]*} == "$VERSION" ]] || fail 'release and package versions differ'
-[[ $(git rev-parse HEAD) == "$INPUT_SOURCE_SHA" && -z $(git status --porcelain) ]] || fail 'checkout must be clean at the release source SHA'
+bash "$ROOT/scripts/release-source.sh" verify "$INPUT_SOURCE_SHA" || fail 'checkout must be clean at the release source SHA or qualified automation SHA'
+[[ -z $(git status --porcelain) ]] || fail 'checkout must be clean at the release source SHA'
 case $NOTARY_ARCH in
   arm64) runner_arch=ARM64; slice=arm64 ;;
   amd64) runner_arch=X64; slice=x86_64 ;;
@@ -44,7 +45,7 @@ artifact_digest=$(jq -r '.[0].digest' "$stage/matches.json")
 if [[ -n ${NOTARY_NATIVE_METADATA:-} ]]; then
   cp "$NOTARY_NATIVE_ARCHIVE" "$stage/native-artifact.zip"
 else
-  gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$stage/native-artifact.zip"
+  gh api --allow-escape-sequences "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$stage/native-artifact.zip"
 fi
 archive_sha=$(shasum -a 256 "$stage/native-artifact.zip" | awk '{print $1}')
 [[ sha256:$archive_sha == "$artifact_digest" ]] || fail 'artifact archive digest mismatch'
