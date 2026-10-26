@@ -1,0 +1,173 @@
+name: Native CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Native ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - os: macos-15
+            goos: darwin
+            goarch: arm64
+          - os: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - os: windows-2025
+            goos: windows
+            goarch: amd64
+    env:
+      CGO_ENABLED: '1'
+      GOMAXPROCS: '2'
+      GOFLAGS: -mod=readonly
+      GOTOOLCHAIN: local
+      CI_EXPECTED_GOOS: ${{ matrix.goos }}
+      CI_EXPECTED_GOARCH: ${{ matrix.goarch }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Pins verified with git ls-remote against each official actions/* remote.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.10'
+          check-latest: false
+          cache: false
+      - name: Linux X11, OpenGL and user-keyring build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y gcc pkg-config libgl1-mesa-dev xorg-dev libxkbcommon-dev libdbus-1-dev shellcheck
+      - name: Native workflow validation
+        if: runner.os == 'Linux'
+        run: |
+          GOBIN="$RUNNER_TEMP/actionlint" go install -p 2 github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$RUNNER_TEMP/actionlint/actionlint" .github/workflows/ci.yml
+      - name: Windows native C compiler and race runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # runner-images installs standalone MinGW here; MSYS2 has no GCC package.
+          $gcc = 'C:/mingw64/bin'
+          if (-not (Test-Path "$gcc/gcc.exe" -PathType Leaf)) { throw 'Hosted runner is missing MinGW-w64 gcc' }
+          $runtime = & "$gcc/gcc.exe" --print-file-name libsynchronization.a
+          if ($LASTEXITCODE -ne 0 -or $runtime -eq 'libsynchronization.a' -or -not (Test-Path -LiteralPath $runtime -PathType Leaf)) {
+            throw 'Go race detection requires MinGW-w64 runtime 8 or newer (libsynchronization.a)'
+          }
+          $gcc | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CC=$gcc/gcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Formatting, module integrity, tests, vet, native GUI build and CLI smoke
+        run: bash scripts/ci-native.sh
+      - name: Unix tooling syntax
+        if: runner.os == 'Linux'
+        run: |
+          shellcheck -x scripts/*.sh build/linux/*.sh
+          for script in scripts/*.sh build/linux/*.sh; do bash -n "$script"; done
+      - name: Windows tooling syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem scripts/*.ps1 | ForEach-Object {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+      - name: Offline packaging contract checks
+        if: runner.os != 'Windows'
+        env:
+          NATIVE_BINARY: bin/takedown
+        run: bash scripts/test-packaging.sh
+      - name: Offline R1 loss and collision regressions (synthetic fixtures only)
+        if: runner.os != 'Windows'
+        run: bash scripts/test-release-r1.sh
+      - name: Package macOS native binary
+        if: runner.os == 'macOS'
+        env:
+          BINARY: bin/takedown
+        run: bash scripts/package-macos.sh
+      - name: Package Linux native binary
+        if: runner.os == 'Linux'
+        env:
+          BINARY: bin/takedown
+        run: bash scripts/package-linux.sh
+      - name: Linux archive install/uninstall smoke (temporary user prefix)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "$RUNNER_TEMP/takedown-extracted"
+          tar -xzf dist/packages/linux-*-local/*.tar.gz -C "$RUNNER_TEMP/takedown-extracted"
+          export INSTALL_PREFIX="$RUNNER_TEMP/takedown user install"
+          bash "$RUNNER_TEMP"/takedown-extracted/*/install-user.sh
+          "$INSTALL_PREFIX/bin/takedown" --version
+          test -f "$INSTALL_PREFIX/share/applications/takedown.desktop"
+          bash "$RUNNER_TEMP"/takedown-extracted/*/uninstall-user.sh
+          test ! -e "$INSTALL_PREFIX/bin/takedown"
+      - name: Install Windows packaging prerequisite
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis --version=3.11 --yes --no-progress --limit-output
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          'C:/Program Files (x86)/NSIS' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Package Windows native binary and per-user installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Binary bin/takedown.exe
+      - name: Windows per-user install/uninstall smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem 'dist/packages/windows-*-local/*-setup.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'Installer is missing' }
+          ./scripts/test-windows-installer.ps1 -Installer $setup.FullName
+      - name: Check every checksum entry will be retained
+        run: bash scripts/check-artifact-retention.sh .github/workflows/ci.yml
+      - name: Store unsigned test packages (no publication)
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: unsigned-native-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: |
+            dist/packages/**/*.zip
+            dist/packages/**/*.dmg
+            dist/packages/**/*.tar.gz
+            dist/packages/**/*-setup.exe
+            dist/packages/**/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  ci-required:
+    name: ci-required
+    needs: native
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      NATIVE_RESULT: ${{ needs.native.result }}
+    steps:
+      - name: Require every native matrix job to succeed
+        run: |
+          if [[ $NATIVE_RESULT != success ]]; then
+            printf 'Native matrix did not succeed: %s\n' "$NATIVE_RESULT" >&2
+            exit 1
+          fi

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=takedown
+Comment=Download and verify ready Google Takeout archives
+Exec=takedown gui
+TryExec=takedown
+Icon=takedown
+Terminal=false
+Categories=Utility;Network;

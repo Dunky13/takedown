@@ -1,0 +1,175 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signing research: macOS precedent and Windows choices</title><style>:root{color-scheme:light dark}body{margin:0;color:var(--foreground,light-dark(#172334,#e5e9f0));font:16px/1.65 system-ui,sans-serif}main{max-inline-size:78ch;margin-inline:auto}h1,h2{line-height:1.2;letter-spacing:-.02em}h1{font-size:1.9rem}h2{font-size:1.3rem;margin-block-start:2rem}p,li,td{overflow-wrap:anywhere}li{margin-block:.5rem}a{color:inherit;text-decoration:underline;text-underline-offset:2px}code{font:.88em ui-monospace,monospace;background:var(--muted,light-dark(#eef2f6,#202936));padding:.1em .25em;border-radius:3px}table{border-collapse:collapse;inline-size:100%;font-size:.92rem}th,td{padding:.7rem;text-align:start;vertical-align:top;border-bottom:1px solid var(--border,#7d879650)}th{background:var(--background,light-dark(#f2f5f8,#18212d))}pre{white-space:pre-wrap}ul,ol{padding-inline-start:1.5rem}.tablescroll{overflow:auto;max-inline-size:100%}@media print{body{font-size:10pt}a{color:inherit}h2{break-after:avoid}tr{break-inside:avoid}}</style><main><h1>Signing research: macOS precedent and Windows choices</h1>
+<p>Checked 26 October 2026. This is a research result and proposed direction, not an
+implementation or authorization to use credentials, enroll with a provider, sign,
+submit, publish, or change another repository. Existing implementation and private
+credential values were not changed or read.</p>
+<h2>Recommended direction</h2>
+<p>For macOS, reuse the existing Apple team setup with takedown-specific protected
+configuration. Adopt agent-job-queue's separation of build, signing, recoverable
+notarization and final acceptance. Keep takedown's simpler app/DMG layout rather
+than copying Agent Queue's custom installer stages.</p>
+<p>For Windows, prefer <strong>Microsoft Artifact Signing Basic if the publisher is an
+eligible Dutch organization</strong>. Its published starting price is <strong>US$9.99/month</strong>
+for 5,000 signatures. If publishing as a Dutch individual, this public-trust route
+is currently unavailable: Microsoft permits individual applicants only in the US
+and Canada. An OSS application to SignPath Foundation or an individual-capable CA
+with hardware/cloud key custody becomes the alternative. The publishing identity
+has not been assumed. <a href="https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart">Eligibility</a>,
+<a href="https://azure.microsoft.com/en-us/products/artifact-signing">published USD pricing</a>,
+<a href="https://signpath.org/terms.html">Foundation conditions</a>.</p>
+<h2>Verified Apple setup</h2>
+<p>GitHub's current repository/environment metadata confirms that Hikyo and
+agent-job-queue have the same configured Apple team. Both use an <code>apple-signing</code>
+environment containing these secret names:</p>
+<ul>
+<li><code>APPLE_DEVELOPER_ID_P12_BASE64</code></li>
+<li><code>APPLE_DEVELOPER_ID_P12_PASSWORD</code></li>
+<li><code>APPLE_NOTARY_KEY_P8</code></li>
+</ul>
+<p>Their configuration also supplies the signing identity, team ID, notarization key
+ID and issuer ID. Metadata confirms configuration exists; it does not reveal or
+prove identical certificate/key bytes, current certificate validity, or authorize
+copying secrets. Takedown currently uses different input names and a base64 API
+key input; an adapter should align the contract deliberately. The existing team
+is the precedent, so a new Apple developer enrollment is not the first step.
+<a href="https://github.com/Hikyo-Org/Hikyo/blob/4a7beff3272346fb46fec5da058506f1d558282e/docs/release/apple-signing.md">Hikyo configuration</a>,
+<a href="https://github.com/Dunky13/agent-job-queue/blob/b5dac59a30d6365d2edb37e77ba14ff3a2a94416/docs/apple-signing.md">Agent Queue configuration</a>.</p>
+<h2>How the two macOS pipelines work</h2>
+<p>The inspected GitHub main commits were Hikyo
+<code>4a7beff3272346fb46fec5da058506f1d558282e</code> and agent-job-queue
+<code>b5dac59a30d6365d2edb37e77ba14ff3a2a94416</code>. Exact source snapshots and file hashes
+were retained privately. Findings below describe those bytes, not an arbitrary
+current branch.</p>
+<h3>Hikyo</h3>
+<p>Builds happen before Apple secrets are loaded. A dedicated signing job imports a
+Developer ID Application certificate into a disposable keychain, checks the
+identity, signs each architecture's executable with Hardened Runtime and a secure
+timestamp, and creates signed DMGs. A separate job receives the notarization key
+and verifies the exact signed artifact handoff. It uses <code>notarytool</code>, persists
+submission receipts and matching Apple logs, requires acceptance, staples and
+validates the ticket, verifies the expected Developer ID and runs Gatekeeper
+assessment. Checksums/manifests follow the final bytes.
+<a href="https://github.com/Hikyo-Org/Hikyo/blob/4a7beff3272346fb46fec5da058506f1d558282e/scripts/release/sign-apple-artifacts.sh">Signing helper</a>,
+<a href="https://github.com/Hikyo-Org/Hikyo/blob/4a7beff3272346fb46fec5da058506f1d558282e/.github/workflows/release.yml">release jobs</a>.</p>
+<p>Its current <code>--notarize-only</code> helper submits again when invoked; preserving
+receipts is not a general resume engine. Stable releases require notarization.
+Nightlies may use a specifically gated fallback that omits every DMG and declares
+unverified notarization. A hosted-runner-only wrapper handles an observed Apple
+ticket-network issue; that firewall workaround should not be copied to a local
+Mac or enabled without a corresponding need.
+<a href="https://github.com/Hikyo-Org/Hikyo/blob/4a7beff3272346fb46fec5da058506f1d558282e/docs/release/apple-signing.md">Recovery and fallback contract</a>.</p>
+<h3>Agent Job Queue</h3>
+<p>Distribution consumes an already-built artifact and verifies its original run,
+source identity and digest before credential use. Signing and notarization use
+protected main automation and a temporary keychain. The resumable CI path uses a
+prebuilt Go client for Apple's official Notary REST API, rather than native
+<code>notarytool</code> for its direct API-key path. It retains exact signed upload archives,
+hashes, stage state and submission IDs in immutable checkpoints. Local one-shot
+and keychain-profile paths still use <code>notarytool</code>.
+<a href="https://github.com/Dunky13/agent-job-queue/blob/b5dac59a30d6365d2edb37e77ba14ff3a2a94416/.github/workflows/distribution.yml">Distribution workflow</a>,
+<a href="https://github.com/Dunky13/agent-job-queue/blob/b5dac59a30d6365d2edb37e77ba14ff3a2a94416/scripts/macos-resume.sh">resume engine</a>.</p>
+<p>Each create request is attempted once. The client saves the returned submission
+ID before uploading to Apple's temporary S3 destination. A retry can poll or
+finish an existing stage; it does not blindly resubmit an uncertain request.
+Missing evidence, mismatched hashes and unknown outcomes stop recovery. Its
+custom installer requires payload, installer and DMG stages. Separate Apple
+Silicon and Intel acceptance jobs precede publication and Homebrew verification.
+<a href="https://github.com/Dunky13/agent-job-queue/blob/b5dac59a30d6365d2edb37e77ba14ff3a2a94416/internal/notaryapi/submit.go">Submission custody</a>,
+<a href="https://github.com/Dunky13/agent-job-queue/blob/b5dac59a30d6365d2edb37e77ba14ff3a2a94416/docs/apple-signing.md">pipeline explanation</a>.</p>
+<h3>Hosted evidence checked now</h3>
+<p>Hikyo run <strong>40171412797</strong>, at source commit
+<code>059902e8ca29ca2d41f7767d0d65a49d9211826f</code>, reports successful <code>apple-sign</code>,
+<code>apple-notarize</code> and publication jobs. Its source is older than the inspected main
+commit, so this is not exact-head qualification of every current main change.
+Agent Job Queue distribution <strong>40026971766</strong>, with automation commit
+<code>b5dac59a30d6365d2edb37e77ba14ff3a2a94416</code>, reports successful
+sign/notarize, Apple Silicon/Intel acceptance, publication and Homebrew checks.
+These are live workflow results, not a fresh independent download, signature or
+Gatekeeper assessment of their published files.
+<a href="https://github.com/Hikyo-Org/Hikyo/actions/runs/40171412797">Hikyo run</a>,
+<a href="https://github.com/Dunky13/agent-job-queue/actions/runs/40026971766">Agent Queue run</a>.</p>
+<h2>What takedown should carry over</h2>
+<ol>
+<li>Build/test the native binary before exposing Apple credentials; consume and
+verify that immutable artifact in the protected signing job. The current
+signed-packaging workflow can build while signing inputs are in its environment.</li>
+<li>Retain the existing inner-executable then app signing order. Notarize the app
+ZIP, staple/validate the app, recreate the final ZIP, then sign/notarize/staple
+the DMG. A ZIP cannot itself carry a ticket. Takedown has no Agent Queue outer
+custom installer, so it does not need that extra installer stage.</li>
+<li>Persist artifact hashes, submission IDs and Apple logs outside disposable
+credential scratch. Add explicit resume/finish behavior for the same bytes;
+keep unknown outcomes held. Printing an ID followed by scratch cleanup is not
+equivalent to a durable recovery checkpoint.</li>
+<li>Keep identity/team/chain verification, keychain restoration, ticket validation
+and a final Gatekeeper assessment. Preserve quarantine during clean-machine
+acceptance. Do not copy another project's nightly fallback as release policy.</li>
+</ol>
+<p>These are source-derived recommendations. Apple's workflow supports submission
+IDs, log retrieval, a REST API alternative and recreating a ZIP after stapling.
+<a href="https://developer.apple.com/documentation/security/customizing-the-notarization-workflow">Apple custom workflow</a>,
+<a href="RELEASING.md">takedown release guide</a>.</p>
+<h2>Windows choices</h2>
+<p>Neither inspected project's workflow/scripts contain an Authenticode/SignTool
+pipeline to reuse. Hikyo's release signatures/provenance should not be confused
+with a Windows publisher signature. Takedown needs its own provider adapter.</p>
+<h3>A. Microsoft Artifact Signing, preferred for an eligible organization</h3>
+<p>Public Trust supports EU organizations, including Dutch organizations. Individual
+Public Trust applicants must currently be in the US or Canada. Validation and a
+usable Azure subscription/tenant remain prerequisites; no eligibility or business
+identity is inferred for the owner.
+<a href="https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart">Microsoft eligibility</a>.</p>
+<p>Basic lists <strong>US$9.99/month for 5,000 signatures</strong>, then <strong>US$0.005/signature</strong>.
+That is US$119.88/year before tax, currency conversion and other CI charges; a
+Dutch EUR quote was not established. Managed hardware-backed keys avoid an
+exported PFX. GitHub Actions can use OIDC federation and the narrowly scoped
+Certificate Profile Signer role instead of a long-lived Azure client secret.
+<a href="https://azure.microsoft.com/en-us/products/artifact-signing">Pricing</a>,
+<a href="https://github.com/Azure/artifact-signing-action/blob/main/docs/OIDC.md">OIDC integration</a>.</p>
+<h3>B. SignPath Foundation, conditional free OSS route</h3>
+<p>Accepted projects can use free signing with the Foundation's certificate and
+publisher identity. Terms require an OSI-approved license, an already released
+and maintained project, verifiable reputation, explicit signing roles/approval,
+and other published conditions. Takedown currently has no root license declared;
+admission is not automatic. Its GitHub connector also needs provenance-preserving
+artifact round trips, making the current synchronous NSIS hook a less direct fit.
+<a href="https://signpath.org/">Foundation</a>, <a href="https://signpath.org/terms.html">terms</a>,
+<a href="https://docs.signpath.io/trusted-build-systems/github">GitHub integration</a>.</p>
+<h3>C. Individual-capable CA with token or cloud HSM</h3>
+<p>A CA offering individual validation is a fallback if Microsoft eligibility or
+Foundation admission does not fit. Obtain an applicable Dutch quote and confirm
+the exact key-custody/CI integration before purchasing. Sectigo documents
+individual applicants, but this research establishes no particular enrollment or
+price. A hardware/cloud signer is preferable for unattended CI to a USB token
+that requires a physical signing host.
+<a href="https://www.sectigo.com/faqs/detail/OV-Code-Signing-Validation-for-Organizations-and-Individuals">Individual validation</a>.</p>
+<h2>Necessary Windows adapter changes</h2>
+<p>The present release adapter expects an exportable PFX. That is not the default
+plan for a newly issued public-trust certificate: modern CA key-custody rules
+require protected hardware/service storage, and DigiCert explicitly excludes
+export of token/HSM/KeyLocker keys. Private/internal trust and legacy exportable
+certificates are different cases.
+<a href="https://cabforum.org/working-groups/code-signing/requirements/">CA/Browser Forum requirements</a>,
+<a href="https://knowledge.digicert.com/general-information/export-a-code-signing-certificate-as-a-pfx-file">DigiCert PFX restriction</a>.</p>
+<p>Keep the order <strong>sign application, sign generated uninstaller before embedding,
+sign final installer, then hash/archive</strong>. Retain independent Authenticode and
+timestamp verification, and add the expected publisher/profile check. A Microsoft
+adapter can use SignTool's managed-signing dlib inside NSIS's existing hook.
+Its documented timestamp endpoint uses HTTP; the current HTTPS-only timestamp
+check needs a deliberate provider-specific policy rather than a blanket relaxation
+or an invented HTTPS URL. Foundation requires a reviewed artifact-provenance
+staging design instead of treating an arbitrary file upload as trusted output.
+<a href="https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-signing-integrations">Microsoft integration</a>,
+<a href="https://nsis.sourceforge.io/Docs/Chapter5.html#uninstfinalize">NSIS hook</a>.</p>
+<p>Signing does not guarantee zero SmartScreen prompts, and EV is no longer an
+automatic bypass. Store/MSIX is a separate distribution route; submitting the
+existing EXE/NSIS installer to the Store still requires publisher signing.
+<a href="https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation">SmartScreen</a>,
+<a href="https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options">Store packaging distinction</a>.</p>
+<h2>Decision still needed</h2>
+<p>Choose the intended Windows publisher identity: eligible organization or
+individual. That determines the preferred provider. Licensing, paid enrollment,
+provider approval and any production credential provisioning require the owner's
+decision. No signing, notarization submission, provider signup, purchase, workflow
+dispatch, release publication or changes to Hikyo/Agent Queue occurred here.</p>
+</main></html>

@@ -1,0 +1,9 @@
+[Details]
+Name = "takedown"
+ID = "io.github.dunky13.takedown"
+Version = "0.0.0"
+Build = 1
+
+# Informational Fyne metadata. The native packaging scripts consume explicit
+# VERSION and do not install or invoke an additional Fyne CLI/tool dependency.
+# Licensing remains an owner decision; this file grants no distribution license.

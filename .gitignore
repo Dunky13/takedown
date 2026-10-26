@@ -1,0 +1,11 @@
+/bin/
+/dist/
+/.local/
+/build/artifacts/
+/oauth-client*.json
+/portability-client*.json
+/private-data/
+*.part
+takedown-state.json*
+*.test
+coverage.out
