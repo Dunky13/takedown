@@ -1,5 +1,9 @@
 # Release automation
 
+Implementation handoff: [PR #2](https://github.com/Dunky13/takedown/pull/2).
+The first authorized stable release is `0.0.1`; publication must wait for the
+native CI and protected Apple signing gates described below.
+
 The `Release and nightly` workflow builds and publishes all four native targets
 from one frozen `main` commit. Manual runs choose a version bump; the daily
 schedule publishes an unsigned nightly only when `main` differs from the last
