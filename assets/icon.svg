@@ -1,4 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#2563eb"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="32" font-weight="600" fill="#ffffff">T</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>takedown archive download icon</title>
+  <defs>
+    <linearGradient id="tile" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop stop-color="#303971"/>
+      <stop offset="1" stop-color="#101D37"/>
+    </linearGradient>
+    <linearGradient id="box" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop stop-color="#EEF2FF"/>
+      <stop offset="1" stop-color="#B8C8F3"/>
+    </linearGradient>
+    <linearGradient id="lid" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop stop-color="#67C6F4"/>
+      <stop offset="1" stop-color="#6694E8"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="108" ry="108" fill="url(#tile)"/>
+  <rect x="112" y="252" width="288" height="156" rx="28" ry="28" fill="url(#box)"/>
+  <path d="M112 272H400V296H112Z" fill="#899ED4"/>
+  <rect x="96" y="224" width="320" height="56" rx="16" ry="16" fill="url(#lid)"/>
+  <path d="M232 94H280A10 10 0 0 1 290 104V174H332A10 10 0 0 1 339.071 191.071L263.071 267.071A10 10 0 0 1 248.929 267.071L172.929 191.071A10 10 0 0 1 180 174H222V104A10 10 0 0 1 232 94Z" fill="#182643"/>
+  <path d="M232 104H280V184H332L256 260L180 184H232Z" fill="#FFFFFF"/>
+  <rect x="208" y="328" width="96" height="24" rx="12" ry="12" fill="#293B67"/>
 </svg>

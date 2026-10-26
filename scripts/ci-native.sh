@@ -8,7 +8,7 @@ goarch=$(go env GOARCH)
 [[ $goos == "$(go env GOHOSTOS)" && $goarch == "$(go env GOHOSTARCH)" ]] || { echo 'Native CI must build for the host OS and architecture' >&2; exit 1; }
 [[ $goos == "${CI_EXPECTED_GOOS:-$goos}" && $goarch == "${CI_EXPECTED_GOARCH:-$goarch}" ]] || { echo 'Native CI runner does not match the required OS and architecture' >&2; exit 1; }
 [[ $(go list -m -mod=readonly -f '{{.Version}}' fyne.io/fyne/v2) == v2.8.2 ]] || { echo 'Fyne v2.8.2 is required' >&2; exit 1; }
-unformatted=$(gofmt -l cmd internal)
+unformatted=$(gofmt -l cmd internal assets scripts/*.go)
 [[ -z $unformatted ]] || { printf 'gofmt required:\n%s\n' "$unformatted" >&2; exit 1; }
 go mod verify
 # Integrity alone does not detect stale requirements or missing checksum entries.

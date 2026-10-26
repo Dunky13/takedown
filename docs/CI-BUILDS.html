@@ -43,6 +43,20 @@ gh run download RUN_ID --repo Dunky13/takedown --dir ci-artifacts
 <code>shasum -a 256 -c SHA256SUMS</code> on macOS or <code>sha256sum -c SHA256SUMS</code> on Linux.
 Checksums detect changed bytes; they do not establish publisher identity.
 The package version <code>0.0.0</code> denotes a development build, not a release.</p>
+<h2>Icons and license files</h2>
+<p>The GUI and native packages use the original archive/download icon in
+<a href="../assets/"><code>assets/</code></a>. The SVG is the editable source; PNG, ICO, ICNS, and the
+Windows resource object are generated assets. See the asset instructions there
+before regenerating them. The README uses the same PNG as the GUI.
+Linux CI regenerates the assets in memory and compares their bytes without
+rewriting the checkout.</p>
+<p>Packages carry the project's Apache 2.0 <code>LICENSE</code> and <code>NOTICE</code>, together with
+<code>THIRD_PARTY_NOTICES.md</code> for dependencies that retain their own licenses. Changes
+to dependencies or bundled assets require checking those notices as well as the
+application. These files do not indicate Google app verification or signed
+publisher status.
+Linux CI also verifies the generated notice bundle against all four pinned
+native runtime dependency graphs. The bundle documents regeneration and scope.</p>
 <h2>Local equivalent</h2>
 <p>Run from the repository root with the native compiler, graphics headers, and
 Go 1.26.10 installed as described in <a href="RELEASING.md">the release guide</a>:</p>
@@ -69,7 +83,7 @@ manual signing workflow require separately authorized configuration and runs.
 Unsigned downloads can trigger normal operating-system trust prompts.
 No public release, automatic update, or deployment is performed by Native CI.</p>
 <p>Source and workflow review remain required before merging. The <code>ci-required</code>
-aggregate must pass together with every native matrix job. The repository's
-current GitHub plan does not expose private-repository branch protection;
-this documentation does not claim those checks are enforced by a branch rule.</p>
+aggregate must pass together with every native matrix job. Check the repository's
+current branch rules separately; this guide does not establish their enforcement
+or grant approval to merge, sign, or publish a release.</p>
 </main></html>

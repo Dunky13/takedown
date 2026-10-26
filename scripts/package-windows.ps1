@@ -53,8 +53,12 @@ try {
         if ($joined -notmatch "(?m)$pattern") { throw "Binary is not the required native desktop build: $pattern" }
     }
     if ($joined -match '-tags=.*(headless|ci)') { throw 'Headless/ci tagged binaries cannot be packaged as desktop apps' }
-    Copy-Item -LiteralPath 'README.md', 'PRIVACY.md', 'PRIVACY.html' -Destination $stage
-    foreach ($license in @('LICENSE', 'LICENSE.md', 'LICENSE.txt', 'COPYING')) {
+    foreach ($license in @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md')) {
+        $item = Get-Item -LiteralPath $license -Force
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "License payload must be a regular file: $license" }
+    }
+    Copy-Item -LiteralPath 'README.md', 'PRIVACY.md', 'PRIVACY.html', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md' -Destination $stage
+    foreach ($license in @('LICENSE.md', 'LICENSE.txt', 'COPYING')) {
         if (Test-Path -LiteralPath $license) { Copy-Item -LiteralPath $license -Destination $stage }
     }
     $metadata = @("Package version: $Version", "Mode: $Mode") + $info[1..($info.Count - 1)]

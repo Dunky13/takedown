@@ -1,20 +1,247 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
+<img src="assets/icon.png" width="96" height="96" alt="takedown archive download icon">
 
 # takedown
 
-A Go application for downloading Google Takeout archives delivered to Drive and
-exports created with the Data Portability API, using documented Google APIs.
-Destinations include local folders, mounted shares, Windows UNC paths, SMB2/3,
-and SFTP. The default binary contains a
-Cobra CLI and a native Fyne desktop interface. No arguments opens the desktop app.
+**Download your Google Takeout archives to your own storage.**
 
-## Build and run
+takedown is a native desktop app and CLI for downloading Drive-delivered Takeout
+archives and exports from Google's Data Portability API. Choose a local folder,
+mounted share, Windows UNC path, SMB2/3 share, or SFTP destination.
 
-Use **Go 1.26.10 or newer**. Current SSH/network dependencies require Go 1.26,
-and the module selects a patched toolchain.
-A desktop build also needs a C compiler and native graphics development libraries.
-Google sign-in and consent use your normal system browser. No Chromium automation,
-password entry, TOTP entry, cookies, or stealth are used.
+[Download CI builds](https://github.com/Dunky13/takedown/actions/workflows/ci.yml) · [Quickstart](#quickstart-drive-delivered-takeout) · [Privacy](PRIVACY.md) · [Apache-2.0](LICENSE)
+
+## What it does
+
+- **Desktop and terminal:** the same executable opens the Fyne GUI with no
+  arguments, or runs CLI commands. The GUI includes Drive folder navigation, a
+  Data Portability resource catalog, job controls, diagnostics, and progress.
+- **Download once or keep watching:** fetch ready archives, poll for new ones,
+  or explicitly register a watch at user login. JSON output is available for
+  archive lists, job receipts, diagnostics, and download status.
+- **Resume interrupted transfers:** retain partial files and durable checkpoints,
+  validate source identity before appending, and retry temporary failures with
+  backoff. Ctrl+C retains resumable work.
+- **Check space and archive integrity:** reserve space across workers, pause when
+  capacity runs low, check ZIP entry checksums or complete gzip streams, and
+  record SHA-256 digests for restart checks. Archives are not extracted.
+- **Use documented Google APIs:** authorize through your system browser, keep
+  OAuth tokens in the OS keyring, and explicitly manage Data Portability exports.
+  Passwords and MFA stay in Google's browser flow.
+
+takedown is an independent project and is not affiliated with or endorsed by
+Google. Google verification or approval of this app has not been established.
+Live Google account testing remains the user's responsibility.
+
+## Download and run
+
+Open [Native CI in GitHub Actions](https://github.com/Dunky13/takedown/actions/workflows/ci.yml),
+select a successful run for the intended commit, and download its
+`unsigned-native-*` artifact for your platform. These are **unsigned development
+builds**, not signed or notarized releases. GitHub sign-in and repository access
+may be required; artifacts expire after seven days.
+
+| CI target | Packages |
+| --- | --- |
+| macOS Apple Silicon (arm64) | App ZIP and DMG |
+| macOS Intel (amd64) | App ZIP and DMG |
+| Windows (amd64) | Portable ZIP and per-user installer |
+| Linux (amd64, Ubuntu 24.04 build host) | TAR.GZ with per-user install/uninstall scripts |
+
+Each artifact includes `SHA256SUMS`. Verify it from the package directory with
+`shasum -a 256 -c SHA256SUMS` on macOS or `sha256sum -c SHA256SUMS` on Linux.
+Checksums detect changed bytes; they do not authenticate the publisher.
+Unsigned apps can trigger operating-system trust prompts.
+
+Launch the app to use the GUI. CLI commands use the same executable: inside a
+macOS bundle it is `takedown.app/Contents/MacOS/takedown`; Windows uses
+`takedown.exe`; the Linux archive contains `bin/takedown`. The examples below use
+`takedown`, assuming its directory is on `PATH`. For a source build, substitute
+`./bin/takedown` or `.\bin\takedown.exe` on Windows.
+
+See [CI builds and artifact retrieval](docs/CI-BUILDS.md) for revision checks,
+download commands, and the exact native matrix, and
+[package installation](docs/RELEASING.md#unsigned-local-packages) for installation
+and removal. A successful build does not establish interactive GUI or live
+Google/network-storage acceptance on that platform.
+
+## Quickstart: Drive-delivered Takeout
+
+1. **Configure your Google project.** Follow Google's
+   [desktop OAuth setup](https://developers.google.com/identity/protocols/oauth2/native-app)
+   to enable the Google Drive API and create a **Desktop app** OAuth client.
+   Configure the consent screen with the required `drive.readonly` scope and,
+   when using an external app in Testing, add your account as a test user.
+   Download the client JSON to a private file such as `./oauth-client.json`.
+   Do not commit it.
+2. **Create your export.** In [Google Takeout](https://takeout.google.com/), choose
+   **Add to Drive**, your products, archive format, and any recurring schedule.
+   Wait for Google to deliver the archives, then copy the containing Drive folder
+   link. Google's [Takeout guide](https://support.google.com/accounts/answer/3024190?hl=en)
+   explains the delivery options. Existing email-link exports must be downloaded
+   through Google's interface or recreated with a supported delivery method.
+3. **Authorize and download.** Use the GUI's setup controls, or run:
+
+   ```sh
+   takedown auth --source drive --oauth-client ./oauth-client.json --drive-folder 'https://drive.google.com/drive/folders/FOLDER_ID'
+   takedown list --json
+   takedown download --destination ./archives
+   ```
+
+   Replace `FOLDER_ID` with your actual folder ID. Complete Google's sign-in and
+   consent in your system browser. Successful authorization saves the client,
+   source, and folder preferences. To keep checking for new ready archives:
+
+   ```sh
+   takedown watch --destination ./archives
+   ```
+
+**Drive permission is read-only but broad.** The restricted `drive.readonly`
+scope permits viewing and downloading **all your Drive files**, even though
+takedown limits discovery to your selected folder and descendants. The narrower
+`drive.file` scope does not automatically cover Google-created archives and
+future files in that folder. Public distribution requires the applicable Google
+verification process; publishing source or passing tests does not establish
+approval. See [Google's Drive scope requirements](https://developers.google.com/workspace/drive/api/guides/api-specific-auth).
+
+A functioning, unlocked OS keyring is required: macOS Keychain, Windows
+Credential Manager, or Linux Secret Service. Tokens refresh while Google's grant
+remains valid; revoked or expired authorization requires explicit sign-in again.
+External OAuth apps in Testing can receive refresh tokens that expire after
+seven days. See [Google's token expiration guidance](https://developers.google.com/identity/protocols/oauth2#expiration).
+
+`takedown export --source drive` opens Takeout setup in your browser; you complete
+the export choices. Watching never opens sign-in or creates exports implicitly.
+Use `takedown auth --forget` to remove this profile's local authorization, then
+[Google Account permissions](https://myaccount.google.com/permissions) if you also
+want to revoke Google's remote grant. Neither action deletes downloaded files.
+
+## Data Portability exports
+
+This separate source creates new exports for eligible accounts and supported
+products. It has [different product coverage](https://developers.google.com/data-portability/user-guide/scopes)
+from Takeout and cannot retrieve existing email-link exports. Follow Google's
+[API setup](https://developers.google.com/data-portability/user-guide/setup) and
+[verification requirements](https://developers.google.com/data-portability/user-guide/overview),
+including project billing, then configure a separate OAuth grant with only the
+resource groups you need. The GUI provides a searchable resource catalog.
+
+**Establish encrypted storage before using this source.** Google's
+[Data Portability policy](https://developers.google.com/data-portability/policy)
+requires protection in transit and at rest. takedown does not encrypt destination
+files or verify storage encryption. SFTP protects transit only; direct SMB
+encryption depends on the server and share configuration. An encrypted volume
+or appropriately protected network destination is an operator prerequisite.
+
+```sh
+takedown auth --source portability --oauth-client ./portability-client.json --resources myactivity.search
+takedown export
+takedown watch --destination ./archives
+```
+
+Export creation is explicit. `list` and `watch` never create exports. One-time
+and time-based grants have different limits; the app observes the five-minute
+job polling minimum and 24-hour spacing between time-based export requests.
+See [Google's API workflow](https://developers.google.com/data-portability/user-guide/introduction).
+
+Inspect recorded jobs with `takedown jobs list --source portability --json`.
+The GUI and CLI also expose grant inspection, retry, cancellation, archival,
+reconciliation, and authorization reset. **Retain uncertain request receipts;
+never guess a job ID or delete history to retry a lost response.** Authorization
+reset revokes Google's grant and can remove access to old remote archives.
+Read [recovery and job management](docs/AUTOMATION.md#recovery-and-job-management)
+before using these controls.
+
+## CLI and background use
+
+```sh
+takedown gui
+takedown download --export EXPORT_ID --destination ./archives --part-by-part
+takedown watch --poll-interval 5m --destination ./archives
+takedown status --json
+takedown doctor
+takedown service install --dry-run
+```
+
+`download` selects all ready archives unless `--export` narrows the selection.
+`--part-by-part` downloads sequentially while space permits; unattended work must
+select it explicitly when the whole batch does not fit. `--workers` accepts 1
+through 16 (default 2), and `--safety-buffer` retains free bytes (default
+2,000,000,000). Polling defaults to five minutes, with a one-minute minimum for
+Drive and five minutes for Data Portability.
+
+Preferences and checkpoints live in the platform's user configuration directory
+under `takedown`; `--data-dir ./private-data` selects another profile directory.
+The GUI, successful `auth`, and export setup save preferences; download/watch
+flags apply to that invocation. `--email` is a browser login hint and local
+profile slot, not verified account identity. Keep it consistent between runs.
+Help and status require neither Google credentials nor keyring access.
+
+`doctor` checks local setup. `--online` explicitly probes Google; `--storage`
+connects to the destination and checks capacity, potentially creating its
+directory. Neither proves destination encryption.
+
+After saving preferences and authorization, `service install` starts a watch
+and registers it for the current user's login session using launchd, a systemd
+user service, or a Windows interactive Scheduled Task. It needs an unlocked
+keyring, stable executable path, and saved destination access. Use
+`service remove` before moving or uninstalling the binary. See
+[diagnostics and unattended watching](docs/AUTOMATION.md#diagnostics-and-unattended-watching)
+for setup, changed preferences, and credential removal.
+
+## Network storage
+
+```sh
+takedown download --destination 'smb://operator@nas.example/backups/takeout'
+takedown download --destination 'sftp://operator@nas.example/exports/takeout' --ssh-key ./keys/archive --known-hosts ./keys/known_hosts
+```
+
+On Windows, an accessible share also works directly:
+
+```powershell
+takedown.exe download --destination '\\server\share\takeout'
+```
+
+For password-based SMB/SFTP, use the GUI's masked destination-password field or
+provide `TAKEDOWN_STORAGE_PASSWORD` privately in the environment. For unattended
+work, `takedown storage auth --destination 'smb://operator@nas.example/backups/takeout'`
+explicitly saves destination access in the OS keyring; `storage forget` removes
+it. Do not put passwords in URLs. Establish SFTP host-key trust independently in
+the configured `known_hosts` file.
+
+Network storage must support seeking, regular files, and rename operations.
+SFTP requires `fsync@openssh.com` for durable checkpoints and `statvfs` for capacity
+checks. `--allow-unknown-space` explicitly permits SFTP servers without free-space
+reporting, with a warning; capacity cannot then be guaranteed. Changing the
+destination starts downloads there without moving existing bytes. See
+[destination access and unattended storage](docs/AUTOMATION.md#diagnostics-and-unattended-watching)
+and [restart integrity](docs/AUTOMATION.md#restart-integrity-and-retry-behavior).
+
+## Build from source
+
+Use **Go 1.26.10**, the version pinned by `go.mod` and CI, and Fyne **v2.8.2**
+from the module dependencies. The desktop build requires Cgo, a C compiler, and
+the platform's graphics development files. Install prerequisites first:
+
+| Host | Native build prerequisites |
+| --- | --- |
+| macOS | Xcode command line tools (`xcode-select --install`), including Clang and the macOS SDK |
+| Windows | MinGW-w64 GCC on `PATH`; GNU Make and a compatible shell for Make targets |
+| Linux | GCC, pkg-config, X11 and Wayland development files, OpenGL/EGL, and a working graphics session to launch the GUI |
+
+On Debian/Ubuntu, including the Ubuntu 24.04 CI host:
+
+```sh
+sudo apt-get install build-essential pkg-config libgl1-mesa-dev libegl-dev \
+  xorg-dev libwayland-dev libxkbcommon-dev libdbus-1-dev
+```
+
+The pinned GLFW module enables both X11 and Wayland by default, so both sets of
+headers and EGL are needed. Other distributions need equivalent packages; see
+[GLFW's platform dependencies](https://www.glfw.org/docs/3.4/compile.html#compile_deps)
+and [Fyne's build requirements](https://docs.fyne.io/started/). Fyne does not
+require WebKit2GTK.
+
+From the repository root on macOS or Linux with GNU Make:
 
 ```sh
 go mod download
@@ -22,306 +249,34 @@ make build
 ./bin/takedown
 ```
 
-On macOS, install the Xcode command line tools (`xcode-select --install`). On
-Windows, use a supported MinGW-w64 C compiler on `PATH`. On Debian/Ubuntu Linux:
-
-```sh
-sudo apt-get install build-essential pkg-config libgl1-mesa-dev libegl-dev xorg-dev libwayland-dev libxkbcommon-dev
-```
-
-On Fedora, install `gcc`, `pkgconf-pkg-config`, `mesa-libGL-devel`, `mesa-libEGL-devel`,
-`libXcursor-devel`, `libXrandr-devel`, `libXinerama-devel`, `libXi-devel`,
-`libXxf86vm-devel`, `wayland-devel`, and `libxkbcommon-devel`. On Arch, install
-`base-devel`, `pkgconf`, `mesa`, `libglvnd`, `libxcursor`, `libxrandr`, `libxinerama`,
-`libxi`, `libxxf86vm`, `wayland`, and `libxkbcommon`. These supply OpenGL/EGL and
-both X11 and Wayland development files. The pinned GLFW module enables both Linux
-backends by default. Fyne does not use WebKit2GTK. See
-[GLFW's X11 and Wayland requirements](https://www.glfw.org/docs/3.4/compile.html#compile_deps)
-and [Fyne's build requirements](https://docs.fyne.io/started/).
-
-For a server without native graphics libraries, `make headless` produces the
-optional `bin/takedown-cli` binary. The default build supports both interfaces.
-
-## Set up documented access
-
-1. In Google Cloud, create a **Desktop app** OAuth client, configure the consent
-   screen and enable the Google Drive API. Download the client JSON file into
-   a private local file, such as `./oauth-client.json`. Do not commit it.
-2. Create an export in Google Takeout with **Add to Drive**. You can select
-   Google's recurring export option. `takedown export` opens the documented
-   Takeout setup URL in your browser; you complete its sign-in and export choices.
-3. Copy the Drive folder link containing your Takeout archives. Authorize
-   takedown once, then watch for and download ready archives:
-
-```sh
-./bin/takedown auth --oauth-client ./oauth-client.json --drive-folder 'https://drive.google.com/drive/folders/FOLDER_ID'
-./bin/takedown watch --destination ./archives
-```
-
-Replace `FOLDER_ID` with the actual folder ID from Drive. A successful `auth`
-saves those preferences. **Drive access is read-only but broad:** Google's
-`drive.readonly` scope permits viewing and downloading all Drive files. The app
-limits discovery to your selected folder and its descendants. The narrower
-`drive.file` scope does not automatically grant access to all Google-created
-archives and future files in a selected folder. Public distribution using the
-restricted scope requires Google's applicable verification process; source code
-and local tests do not establish approval. See [Drive scope requirements](https://developers.google.com/workspace/drive/api/guides/api-specific-auth).
-
-The OS keyring stores OAuth tokens; a functioning, unlocked Windows Credential
-Manager, macOS Keychain, or Linux Secret Service is required. Token refresh is
-automatic while Google's grant remains valid. A revoked or expired grant stops
-background work and asks you to authorize again. External OAuth apps left in
-Testing can receive refresh tokens that expire after seven days; publication
-status and Google's verification rules remain operator setup, not an app bypass.
-See [OAuth token expiration](https://developers.google.com/identity/protocols/oauth2#expiration).
-
-```sh
-./bin/takedown export                  # Opens normal Takeout setup for Drive delivery
-./bin/takedown list --json
-./bin/takedown download --destination ./archives
-./bin/takedown download --export EXPORT_ID --destination ./archives --part-by-part
-./bin/takedown watch --poll-interval 5m --destination ./archives
-./bin/takedown status --json
-./bin/takedown auth --forget           # Deletes this profile's local authorization
-./bin/takedown gui
-```
-
-`auth --forget` removes local authorization, not Google's remote grant. Revoke
-remote access in [Google Account permissions](https://myaccount.google.com/permissions).
-The optional `--email` is a browser login hint and local profile slot, not a claim
-that the selected account has been verified. Use the same hint for later runs.
-Help and status need neither Google credentials nor keyring access.
-
-### Data Portability exports
-
-For eligible accounts and supported products, this API can create exports without
-operating the Takeout web UI. It has different product coverage and cannot list
-or retrieve existing email-link Takeout exports. Configure/enable the Data
-Portability API and its required billing and app verification, then select only
-the resource groups you need. It uses a separate OAuth grant from Drive.
-
-Data Portability archives require encryption in transit and at rest. Establish
-protected storage before downloading: takedown does not encrypt destination
-files or verify their storage encryption. SFTP encrypts transit only; direct
-SMB encryption depends on the server and share configuration. An encrypted OS
-volume or appropriately protected network destination is an operator
-prerequisite, not a protection this app automatically supplies.
-
-```sh
-./bin/takedown auth --source portability --oauth-client ./portability-client.json --resources myactivity.search
-./bin/takedown export
-./bin/takedown watch --destination ./archives
-```
-
-The consent screen lets eligible users choose one-time or time-based access.
-Export creation is explicit; `list` and `watch` never create new exports. The app
-persists creation intent before sending a request, prevents blind duplication
-when Google's response is lost, and observes the five-minute polling cadence.
-For time-based grants, separate export invocations must respect the 24-hour limit.
-An ambiguous creation outcome requires reconciliation rather than an automatic
-second POST. See [Google's API workflow](https://developers.google.com/data-portability/user-guide/introduction).
-
-The GUI includes a resource catalog, explicit Drive folder navigation, grant
-inspection, and a Jobs view. The same job controls are available in the CLI:
-
-```sh
-./bin/takedown jobs list --source portability --json
-./bin/takedown jobs list --source portability --refresh
-./bin/takedown jobs access --source portability
-./bin/takedown jobs retry JOB_ID --source portability --confirm
-./bin/takedown jobs cancel JOB_ID --source portability --confirm
-./bin/takedown jobs archive JOB_ID --source portability --confirm
-```
-
-Retry is limited to three attempts per lineage. Cancellation requires an
-in-progress time-based job. Archiving hides terminal history while retaining
-grant, cadence, retry, and download receipts. Failed or unavailable jobs do not
-prevent unrelated ready jobs from downloading; watch retains their hold.
-
-For an uncertain request, `jobs reconcile JOB_ID` requires independent evidence
-that the ID belongs to the exact pending request, account, resources and time.
-API accessibility alone cannot prove that association. Do not guess an ID.
-`jobs resolve-expired` only releases eligible historical time-based requests
-after fourteen days plus five minutes and matching current grant evidence.
-Unknown or one-time historical grants stay held without a known ID.
-
-`jobs reset-authorization` requires explicit confirmation and exact durable
-download completion for every known job. It revokes Google's authorization and
-allows old remote archives to be removed. It cannot clear an uncertain reset;
-that outcome remains held. Reauthorizing does not erase the safety history.
-See [Google's reset contract](https://developers.google.com/data-portability/reference/rest/v1/authorization/reset).
-
-### Background behavior and preferences
-
-`download` selects all ready archives unless `--export` narrows the selection.
-`watch` stays active until canceled, discovers new ready archives, avoids repeating
-completed downloads, and retries temporary service/network failures with backoff
-that respects server retry instructions. It never opens a browser automatically.
-Default polling is five minutes; the minimum is one minute for Drive and five
-minutes for Data Portability. Drive source identities include file revisions;
-changed remote contents cannot silently resume into an old archive.
-
-Default download concurrency is two. `--workers` accepts 1 through 16, and
-`--safety-buffer` sets retained free bytes (default 2,000,000,000). If a whole batch
-does not fit, interactive `download` users can choose part-by-part mode.
-Noninteractive jobs require an explicit `--part-by-part` choice. Ctrl+C cancels
-work while retaining partial files and durable checkpoints.
-
-Preferences and resumable state live in the platform's user configuration
-directory under `takedown`. Override with `--data-dir ./private-data`. The GUI,
-successful `auth`, and export setup save preferences; other flags apply to that
-invocation. Changing account/source/client/folder/permissions invalidates old
-archive selections. Status reads the atomic manifest without taking a writer lock.
-
-Diagnostics are available in the GUI and with `takedown doctor`. By default they
-inspect local setup; `--online` explicitly probes Google and `--storage` connects
-to the destination and checks free space. A storage probe may create its
-directory. Diagnostics do not verify actual destination encryption.
-
-### Start watching at user login
-
-After saving preferences and authorizing explicitly, preview a startup definition:
-
-```sh
-./bin/takedown service install --dry-run
-./bin/takedown service install
-./bin/takedown service status
-./bin/takedown service remove
-```
-
-Installation explicitly starts the watch and registers it for the current user's
-login session: launchd on macOS, systemd user services on Linux, or an interactive
-Scheduled Task on Windows. It requires the saved OAuth refresh grant, an unlocked
-keyring, a stable binary path, and any network destination authorization. It does
-not start sign-in or create exports. Use `--part-by-part` at installation if that
-space policy is desired. Remove the watch before moving or uninstalling the
-binary. Installing an already loaded watcher keeps its current run; remove and
-reinstall to apply changed preferences immediately. Native startup registration
-and reboot behavior require platform testing.
-
-## Network destinations
-
-```sh
-./bin/takedown download --destination 'smb://operator@nas.example/backups/takeout'
-./bin/takedown download --destination 'sftp://operator@nas.example/exports/takeout' --ssh-key ./keys/archive --known-hosts ./keys/known_hosts
-```
-
-On Windows, an already accessible share can be supplied directly:
+On Windows with MinGW-w64 GCC available, PowerShell can build directly:
 
 ```powershell
-.\bin\takedown.exe download --destination '\\server\share\takeout'
+go mod download
+go build -p 2 -trimpath -o bin/takedown.exe ./cmd/takedown
+.\bin\takedown.exe
 ```
 
-For direct SMB or password-based SFTP, supply `TAKEDOWN_STORAGE_PASSWORD` through
-your environment or use the GUI's masked network-password field. For unattended
-use, explicitly save it with `takedown storage auth --destination 'smb://operator@nas.example/backups/takeout'`
-or Diagnostics > Destination access in the GUI. `takedown storage forget` removes
-the selected destination's saved password. These use the OS keyring. Do not embed
-passwords in destination URLs. Remote passwords are not written into preferences
-or the state manifest. SFTP requires a trusted host key in the configured
-`known_hosts` file. Establish that trust independently before downloading.
+For a server without graphics development libraries, `make headless` produces
+`bin/takedown-cli`. It retains the CLI commands and requires the same explicit
+OAuth setup and keyring access. Cross-compiling the GUI also needs a target C
+compiler, SDK, and graphics libraries; setting `GOOS` alone is insufficient.
+See the [native build and packaging guide](docs/RELEASING.md#prerequisites).
 
-The SFTP `statvfs` extension and SMB filesystem information provide available
-space. Unsupported SFTP free-space reporting fails closed by default.
-`--allow-unknown-space` explicitly permits a warning-only policy when the server
-cannot report free space. Under that policy, disk capacity cannot be guaranteed.
-Network storage must support seeking, regular files, and rename operations.
-SFTP downloads also require `fsync@openssh.com` for durable checkpoints. A
-server that cannot sync archive bytes fails explicitly before a newer checkpoint
-is published. Canceling remote I/O may leave the last durable offset behind the
-file length; the next run reconciles and verifies the retained prefix.
+Development checks are `make check` and `make test`. Tests use fake credentials,
+local HTTP/storage fixtures, and Fyne's software test driver; they do not sign
+into Google or modify the real keyring. The `ci` build tag selects that test
+driver and must not be used for desktop packages.
 
-## Resume, space, and verification
+## Documentation and license
 
-New archives are written under `exports/<export-identity-hash>/filename.part`.
-Different exports can share the original filename without overwriting each
-other. Existing checkpointed flat paths continue in place. Both interfaces use the same job
-engine and atomic JSON manifest. Process locking prevents simultaneous writers
-from using the same manifest. Signed URLs and OAuth tokens are excluded from that manifest.
+- [Automation and operator setup](docs/AUTOMATION.md): API boundaries, advanced
+  jobs, recovery, diagnostics, watch/service setup, and network authorization.
+- [CI builds](docs/CI-BUILDS.md): supported native targets and unsigned downloads.
+- [Packaging and signing](docs/RELEASING.md): installation, removal, prerequisites,
+  and separately configured signing/notarization.
+- [Privacy policy](PRIVACY.md): permissions, data handling, retention, and deletion.
 
-Before a batch starts, remaining archive bytes plus the safety buffer must fit.
-Active workers reserve their combined remaining bytes. Space is checked before
-each part and at most every 50,000,000 bytes written per worker. Low space pauses
-the job, flushes partial files, and reports a warning. Free space and resume, or
-stop the job and choose a different destination. Changing destinations starts
-there; it does not silently move previously downloaded bytes.
-
-HTTP resume validates the requested byte range and the expected archive size.
-When the server supplies no strong ETag, the engine compares the retained prefix
-against the same complete response before appending. That preserves identity
-safety but re-reads the prefix over the network.
-OAuth access tokens refresh automatically. Expired API archive URLs are renewed
-through the source API while preserving partial files. Permissions, revoked
-consent, quotas, and archive integrity failures are not treated as reasons to
-bypass a Google check. Long-running watches retry classified transient failures;
-other failures stop with an actionable error.
-
-Archives are verified before their `.part` suffix is removed. ZIP structure and
-entry checksums and complete gzip streams are checked. Drive MD5 checksums, when
-provided, are verified over the archive bytes as well. Verification of remote
-archives reads them through the storage connection. ZIP/gzip verification detects
-corruption; it does not establish a cryptographic Google provenance guarantee.
-Successful completion records store a SHA-256 digest of the compressed archive.
-Restarts recheck that digest before accepting an existing file, including a
-complete `.part`; a different valid archive of the same size is rejected. Older
-checkpoints without a digest or upstream checksum must prove their contents
-against the source before they become trusted completions. Version 2 manifests
-and version 3 manifests are read and upgraded to version 4 on the next durable write.
-Archive files are never extracted automatically.
-
-## Cross-platform builds
-
-Fyne uses CGo. Setting `GOOS` alone cannot cross-compile the desktop binary:
-you also need a C compiler, SDK, and graphics libraries for the target.
-
-```sh
-make windows WINDOWS_CC=x86_64-w64-mingw32-gcc
-make linux LINUX_CC=x86_64-linux-gnu-gcc
-make macos MACOS_CC=clang
-```
-
-The macOS command assumes a macOS host and valid SDK; on another host, supply
-an appropriate SDK/toolchain compiler. The targets produce Windows amd64,
-Linux amd64, and macOS arm64 binaries. For another architecture, build directly:
-
-```sh
-CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -p 2 -trimpath -o bin/takedown-macos-amd64 ./cmd/takedown
-```
-
-Run that example on macOS with its native C compiler. For repeatable
-containerized cross-compilation, see [fyne-cross](https://github.com/fyne-io/fyne-cross).
-Build and runtime acceptance on each target remain separate checks. Unsigned
-binaries may require the platform's normal local application trust approval.
-
-Native CI and package tooling produce macOS app/ZIP/DMG, Windows ZIP/installer,
-and Linux tar packages. See [CI builds and downloads](docs/CI-BUILDS.md) for
-the native target matrix and how to retrieve unsigned test packages.
-Signing is explicit and fails closed when its required
-credentials or verification are missing. See the [release guide](docs/RELEASING.md)
-and its [offline HTML version](docs/RELEASING.html). Hosted CI, native target
-runtime acceptance, signing and notarization are separate qualification steps.
-
-## Development and acceptance
-
-```sh
-make check
-make test
-make build
-make headless
-```
-
-Tests use HTTP servers, temporary storage, a fake credential store, and Fyne's
-software test driver. They do not sign into Google or modify the real OS keyring.
-The `ci` build tag is for Fyne's test driver; do not distribute a `ci` build as
-the desktop application.
-
-The application no longer scrapes Takeout pages or captures Google browser
-sessions. It uses documented OAuth, Drive, and Data Portability interfaces.
-OAuth client setup, consent, account eligibility, applicable Google verification,
-and live provider acceptance remain separate from local implementation tests.
-Live Google, SMB, and cross-platform GUI acceptance are operator checks.
-
-See the [automation and policy handoff](docs/AUTOMATION.md), its
-[self-contained HTML](docs/AUTOMATION.html), and the [privacy policy](PRIVACY.md).
-The [original terms research](docs/TOS-RESEARCH.md) describes the earlier browser
-implementation and is retained as historical evidence.
+Copyright 2026 Marc Went. takedown is licensed under the
+[Apache License 2.0](LICENSE); see [NOTICE](NOTICE). Dependencies retain their
+original licenses, documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

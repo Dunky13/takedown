@@ -55,6 +55,23 @@ Verify each `SHA256SUMS` from its own package directory, using
 Checksums detect changed bytes; they do not establish publisher identity.
 The package version `0.0.0` denotes a development build, not a release.
 
+## Icons and license files
+
+The GUI and native packages use the original archive/download icon in
+[`assets/`](../assets/). The SVG is the editable source; PNG, ICO, ICNS, and the
+Windows resource object are generated assets. See the asset instructions there
+before regenerating them. The README uses the same PNG as the GUI.
+Linux CI regenerates the assets in memory and compares their bytes without
+rewriting the checkout.
+
+Packages carry the project's Apache 2.0 `LICENSE` and `NOTICE`, together with
+`THIRD_PARTY_NOTICES.md` for dependencies that retain their own licenses. Changes
+to dependencies or bundled assets require checking those notices as well as the
+application. These files do not indicate Google app verification or signed
+publisher status.
+Linux CI also verifies the generated notice bundle against all four pinned
+native runtime dependency graphs. The bundle documents regeneration and scope.
+
 ## Local equivalent
 
 Run from the repository root with the native compiler, graphics headers, and
@@ -92,6 +109,6 @@ Unsigned downloads can trigger normal operating-system trust prompts.
 No public release, automatic update, or deployment is performed by Native CI.
 
 Source and workflow review remain required before merging. The `ci-required`
-aggregate must pass together with every native matrix job. The repository's
-current GitHub plan does not expose private-repository branch protection;
-this documentation does not claim those checks are enforced by a branch rule.
+aggregate must pass together with every native matrix job. Check the repository's
+current branch rules separately; this guide does not establish their enforcement
+or grant approval to merge, sign, or publish a release.

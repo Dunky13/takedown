@@ -79,6 +79,12 @@ jobs:
           "CC=$gcc/gcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Formatting, module integrity, tests, vet, native GUI build and CLI smoke
         run: bash scripts/ci-native.sh
+      - name: Generated icons and dependency notices match pinned sources
+        if: runner.os == 'Linux'
+        run: |
+          go mod download
+          go run -mod=readonly -p 2 ./assets/generate.go -check
+          go run -mod=readonly -p 2 scripts/generate-third-party-notices.go -check
       - name: Unix tooling syntax
         if: runner.os == 'Linux'
         run: |

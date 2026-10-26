@@ -5,6 +5,7 @@
   <key>CFBundleDisplayName</key><string>takedown</string>
   <key>CFBundleIdentifier</key><string>io.github.dunky13.takedown</string>
   <key>CFBundleExecutable</key><string>takedown</string>
+  <key>CFBundleIconFile</key><string>icon.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.0.0</string>
   <key>CFBundleVersion</key><string>0.0.0</string>

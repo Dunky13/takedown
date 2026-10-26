@@ -9,6 +9,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	fyneapp "fyne.io/fyne/v2/app"
+	"github.com/Dunky13/takedown/assets"
 	"github.com/Dunky13/takedown/internal/app"
 	"github.com/Dunky13/takedown/internal/config"
 )
@@ -20,6 +21,7 @@ func Run(ctx context.Context, dataDir string, settings config.Settings) (retErr 
 	}
 	defer func() { retErr = errors.Join(retErr, a.Close()) }()
 	desktop := fyneapp.NewWithID("io.github.dunky13.takedown")
+	desktop.SetIcon(fyne.NewStaticResource("icon.png", assets.IconPNG))
 	metadata := desktop.Metadata()
 	if metadata.ID == "" {
 		metadata.ID = desktop.UniqueID()

@@ -18,6 +18,8 @@ FIXTURE="$WORK/payload"
 mkdir -p "$FIXTURE/bin" "$FIXTURE/share/applications" "$FIXTURE/share/icons/hicolor/scalable/apps" "$FIXTURE/share/doc/takedown"
 printf '#!/bin/sh\nexit 0\n' > "$FIXTURE/bin/takedown"
 printf 'fixture docs\n' > "$FIXTURE/share/doc/takedown/README.md"
+printf 'fixture application notice\n' > "$FIXTURE/share/doc/takedown/NOTICE"
+printf 'fixture dependency notices\n' > "$FIXTURE/share/doc/takedown/THIRD_PARTY_NOTICES.md"
 cp assets/icon.svg "$FIXTURE/share/icons/hicolor/scalable/apps/takedown.svg"
 cp build/linux/takedown.desktop "$FIXTURE/share/applications/"
 cp build/linux/*.sh "$FIXTURE/"
@@ -59,10 +61,21 @@ printf 'modified docs\n' > "$PREFIX/share/doc/takedown/README.md"
 expect_failure 'owned file changed' env INSTALL_PREFIX="$PREFIX" bash "$FIXTURE/uninstall-user.sh"
 [[ -f $PREFIX/bin/takedown && -f $PREFIX/share/takedown/install-manifest.sha256 ]]
 cp "$FIXTURE/share/doc/takedown/README.md" "$PREFIX/share/doc/takedown/README.md"
+for name in NOTICE THIRD_PARTY_NOTICES.md; do
+  cmp "$FIXTURE/share/doc/takedown/$name" "$PREFIX/share/doc/takedown/$name"
+  printf 'modified notice\n' > "$PREFIX/share/doc/takedown/$name"
+  expect_failure 'owned file changed' env INSTALL_PREFIX="$PREFIX" bash "$FIXTURE/uninstall-user.sh"
+  [[ -f $PREFIX/bin/takedown && -f $PREFIX/share/takedown/install-manifest.sha256 ]]
+  cp "$FIXTURE/share/doc/takedown/$name" "$PREFIX/share/doc/takedown/$name"
+done
 cp "$PREFIX/share/takedown/install-manifest.sha256" "$WORK/good-manifest"
 printf '%064d  ../../sentinel\n' 0 >> "$PREFIX/share/takedown/install-manifest.sha256"
 expect_failure 'unrecognized ownership path' env INSTALL_PREFIX="$PREFIX" bash "$FIXTURE/uninstall-user.sh"
 cmp "$WORK/sentinel" "$WORK/expected-sentinel"
+cp "$WORK/good-manifest" "$PREFIX/share/takedown/install-manifest.sha256"
+printf '%064d  share/doc/takedown/NOTICE.extra\n' 0 >> "$PREFIX/share/takedown/install-manifest.sha256"
+expect_failure 'unrecognized ownership path' env INSTALL_PREFIX="$PREFIX" bash "$FIXTURE/uninstall-user.sh"
+[[ -f $PREFIX/bin/takedown ]]
 cp "$WORK/good-manifest" "$PREFIX/share/takedown/install-manifest.sha256"
 mv "$PREFIX/share/applications/takedown.desktop" "$WORK/owned-desktop"
 ln -s "$WORK/sentinel" "$PREFIX/share/applications/takedown.desktop"
@@ -72,7 +85,18 @@ rm "$PREFIX/share/applications/takedown.desktop"
 mv "$WORK/owned-desktop" "$PREFIX/share/applications/takedown.desktop"
 INSTALL_PREFIX="$PREFIX" bash "$FIXTURE/uninstall-user.sh"
 [[ ! -e $PREFIX/bin/takedown && ! -e $PREFIX/share/takedown/install-manifest.sha256 ]]
+[[ ! -e $PREFIX/share/doc/takedown/NOTICE && ! -e $PREFIX/share/doc/takedown/THIRD_PARTY_NOTICES.md ]]
 cmp "$WORK/sentinel" "$PREFIX/share/doc/takedown/local-notes.txt"
+for name in NOTICE THIRD_PARTY_NOTICES.md; do
+  mv "$FIXTURE/share/doc/takedown/$name" "$WORK/held-notice"
+  expect_failure 'missing package payload' env INSTALL_PREFIX="$WORK/missing-notice-prefix" bash "$FIXTURE/install-user.sh"
+  [[ ! -e $WORK/missing-notice-prefix ]]
+  ln -s "$WORK/held-notice" "$FIXTURE/share/doc/takedown/$name"
+  expect_failure 'symlink payload path' env INSTALL_PREFIX="$WORK/missing-notice-prefix" bash "$FIXTURE/install-user.sh"
+  [[ ! -e $WORK/missing-notice-prefix ]]
+  rm "$FIXTURE/share/doc/takedown/$name"
+  mv "$WORK/held-notice" "$FIXTURE/share/doc/takedown/$name"
+done
 echo 'PASS R1-01: symlink/ancestor/conflict rejection, manifest validation, modified/unknown file preservation'
 
 # R1-02: apply the real workflow path patterns to ZIP + setup + checksum fixtures.

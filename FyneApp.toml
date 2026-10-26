@@ -3,7 +3,8 @@ Name = "takedown"
 ID = "io.github.dunky13.takedown"
 Version = "0.0.0"
 Build = 1
+Icon = "assets/icon.png"
 
 # Informational Fyne metadata. The native packaging scripts consume explicit
 # VERSION and do not install or invoke an additional Fyne CLI/tool dependency.
-# Licensing remains an owner decision; this file grants no distribution license.
+# Licensed under Apache-2.0; see the repository's LICENSE file.

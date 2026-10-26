@@ -39,6 +39,7 @@ allowed_file() {
   case $1 in
     bin/takedown|share/applications/takedown.desktop|share/icons/hicolor/scalable/apps/takedown.svg) return 0 ;;
     share/doc/takedown/README.md|share/doc/takedown/PRIVACY.md|share/doc/takedown/PRIVACY.html|share/doc/takedown/BUILD-INFO.txt|share/doc/takedown/LICENSE|share/doc/takedown/LICENSE.md|share/doc/takedown/LICENSE.txt|share/doc/takedown/COPYING) return 0 ;;
+    share/doc/takedown/NOTICE|share/doc/takedown/THIRD_PARTY_NOTICES.md) return 0 ;;
     *) return 1 ;;
   esac
 }

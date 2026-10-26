@@ -12,6 +12,7 @@ for tool in ditto hdiutil plutil shasum xattr; do need "$tool"; done
 APP="$WORK/output/takedown.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$WORK/takedown" "$APP/Contents/MacOS/takedown"
+cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/icon.icns"
 cp "$ROOT/build/macos/Info.plist" "$APP/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist"

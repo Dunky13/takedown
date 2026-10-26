@@ -21,7 +21,7 @@ test:
 	go test -p 2 -parallel 2 -race -tags ci ./...
 
 check:
-	@test -z "$$(gofmt -l cmd internal)" || { gofmt -l cmd internal; exit 1; }
+	@test -z "$$(gofmt -l cmd internal assets scripts/*.go)" || { gofmt -l cmd internal assets scripts/*.go; exit 1; }
 	go vet -p 2 -tags ci ./...
 
 # Fyne needs target C compilers and graphics headers. These targets deliberately

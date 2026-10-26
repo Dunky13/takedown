@@ -1,0 +1,10 @@
+takedown
+Copyright 2026 Marc Went
+
+takedown is a desktop application and command-line tool for downloading
+Google Takeout archives through documented Google APIs.
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+Third-party dependencies retain their original licenses.
+See THIRD_PARTY_NOTICES.md for dependency license notices.

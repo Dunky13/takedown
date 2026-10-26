@@ -22,6 +22,14 @@ try {
     $registration = Get-ItemProperty $key
     if ($registration.InstallLocation -ne $installed) { throw 'Incorrect per-user InstallLocation' }
     $paths = @("$installed/takedown.exe", "$installed/uninstall.exe", $shortcut)
+    foreach ($name in @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md')) {
+        $path = Join-Path $installed $name
+        $source = Join-Path (Join-Path $PSScriptRoot '..') $name
+        if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash) {
+            throw "Installed license payload differs from source: $name"
+        }
+        $paths += $path
+    }
     $hashes = @{}
     foreach ($path in $paths) { $hashes[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
     # Execute a copied worker with _?= LAST and unquoted, as NSIS documents.

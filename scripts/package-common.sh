@@ -77,10 +77,13 @@ package_init() {
 }
 
 package_docs() {
+  local license
+  for license in LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
+    [[ -f $license && ! -L $license ]] || fail "missing regular license payload: $license"
+  done
   mkdir -p "$1"
-  cp README.md PRIVACY.md PRIVACY.html "$1/"
-  # Preserve an existing license; never choose one on the distributor's behalf.
-  for license in LICENSE LICENSE.md LICENSE.txt COPYING; do
+  cp README.md PRIVACY.md PRIVACY.html LICENSE NOTICE THIRD_PARTY_NOTICES.md "$1/"
+  for license in LICENSE.md LICENSE.txt COPYING; do
     [[ ! -f $license ]] || cp "$license" "$1/"
   done
   {
