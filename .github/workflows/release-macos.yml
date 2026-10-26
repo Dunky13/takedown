@@ -1,0 +1,70 @@
+name: Release macOS signing
+
+on:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        required: true
+        type: string
+      package_version:
+        required: true
+        type: string
+      release_version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    # Preserve the protected-main boundary from the existing manual signer.
+    # The caller rejects unprotected main before starting any builds.
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ${{ matrix.os }}
+    environment: release-signing
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    env:
+      GOMAXPROCS: '2'
+      GOFLAGS: -mod=readonly
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.checkout_ref }}
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.10'
+          check-latest: false
+          cache: false
+      - name: Build, sign and notarize macOS packages
+        env:
+          VERSION: ${{ inputs.package_version }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          MODE: release
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/package-macos.sh
+      - name: Check signed artifact retention
+        run: bash scripts/check-artifact-retention.sh .github/workflows/release-macos.yml
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: signed-native-${{ runner.os }}-${{ runner.arch }}-${{ inputs.checkout_ref }}
+          path: |
+            dist/packages/**/*.zip
+            dist/packages/**/*.dmg
+            dist/packages/**/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

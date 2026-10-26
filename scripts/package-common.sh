@@ -6,6 +6,19 @@ umask 022
 fail() { printf 'package: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "missing prerequisite: $1"; }
 
+package_validate_release_version() {
+  PACKAGE_RELEASE_VERSION_EXPLICIT=${RELEASE_VERSION+x}
+  RELEASE_VERSION=${RELEASE_VERSION-$VERSION}
+  go run -mod=readonly -p 2 ./cmd/releasectl validate-version --version "$RELEASE_VERSION" || fail 'RELEASE_VERSION must be a supported SemVer version'
+  [[ ${RELEASE_VERSION%%[-+]*} == "$VERSION" ]] || fail 'RELEASE_VERSION numeric core must match VERSION'
+}
+
+package_check_binary_release_version() {
+  if [[ -n $PACKAGE_RELEASE_VERSION_EXPLICIT ]]; then
+    [[ $("$WORK/takedown" --version) == "takedown version $RELEASE_VERSION" ]] || fail 'binary version does not match RELEASE_VERSION'
+  fi
+}
+
 package_reserve_output() {
   # mkdir is the exclusive reservation. Never rename a directory onto another
   # publisher's directory: that operation can silently create OUT_DIR/output.
@@ -39,6 +52,7 @@ package_init() {
   [[ $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail 'VERSION must be a numeric x.y.z (without v)'
   [[ $MODE == local || $MODE == release ]] || fail 'MODE must be local or release'
   [[ $(go env GOVERSION) == go1.26.10 ]] || fail 'Go 1.26.10 is required'
+  package_validate_release_version
   [[ $(go env GOHOSTOS) == "$1" ]] || fail "run this packager natively on $1"
   ARCH=$(go env GOHOSTARCH)
   [[ $ARCH == arm64 || $ARCH == amd64 ]] || fail "unsupported architecture: $ARCH"
@@ -60,7 +74,7 @@ package_init() {
   else
     need cc
     CGO_ENABLED=1 GOOS="$1" GOARCH="$ARCH" go build -mod=readonly -p 2 -trimpath \
-      -ldflags "-X github.com/Dunky13/takedown/internal/cli.Version=$VERSION" \
+      -ldflags "-X github.com/Dunky13/takedown/internal/cli.Version=$RELEASE_VERSION" \
       -o "$WORK/takedown" ./cmd/takedown
   fi
   # Reject optional CLI-only and Fyne's software CI driver, including reused binaries.
@@ -74,6 +88,7 @@ package_init() {
     fail 'headless/ci tagged binaries cannot be packaged as native desktop apps'
   fi
   chmod 755 "$WORK/takedown"
+  package_check_binary_release_version
 }
 
 package_docs() {
@@ -87,7 +102,7 @@ package_docs() {
     [[ ! -f $license ]] || cp "$license" "$1/"
   done
   {
-    printf 'Package version: %s\nMode: %s\nArchitecture: %s\n' "$VERSION" "$MODE" "$ARCH"
+    printf 'Package version: %s\nRelease version: %s\nMode: %s\nArchitecture: %s\n' "$VERSION" "${RELEASE_VERSION:-$VERSION}" "$MODE" "$ARCH"
     # First line contains the local binary path, so omit it from distributed metadata.
     sed '1d' "$WORK/build-info"
   } > "$1/BUILD-INFO.txt"

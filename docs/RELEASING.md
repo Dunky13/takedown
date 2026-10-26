@@ -17,6 +17,11 @@ deferred. The manual signing workflow remains a separate, explicitly authorized
 operation. See [CI builds](CI-BUILDS.md) for
 build targets, artifact retrieval, and validation boundaries.
 
+[Release automation](RELEASE-FLOW.md) adds manual patch/minor/major/custom
+versioning, Conventional Commit changelogs, signed macOS publication, and
+change-aware unsigned nightlies. Its activation and failure-recovery requirements
+are documented separately from these packaging primitives.
+
 ## Prerequisites
 
 Run from the repository root. Install prerequisites explicitly; package scripts
