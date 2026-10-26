@@ -10,6 +10,9 @@ credential, or release publication is needed for these builds.
 The target matrix covers Linux amd64 (`ubuntu-24.04`), Windows amd64
 (`windows-2025`), macOS Apple Silicon (`macos-15`), and macOS Intel
 (`macos-15-intel`). Every target uses Go 1.26.10 and Fyne v2.8.2.
+Repository attributes enforce LF line endings for text files on every target,
+including Windows checkouts with `core.autocrlf=true`; CI checks formatting
+without rewriting source files.
 
 Every native job checks formatting and module integrity, runs race-enabled tests
 with Fyne's software test driver, vets both the test and native configurations,

@@ -6,7 +6,10 @@ credential, or release publication is needed for these builds.</p>
 <h2>Native targets and checks</h2>
 <p>The target matrix covers Linux amd64 (<code>ubuntu-24.04</code>), Windows amd64
 (<code>windows-2025</code>), macOS Apple Silicon (<code>macos-15</code>), and macOS Intel
-(<code>macos-15-intel</code>). Every target uses Go 1.26.10 and Fyne v2.8.2.</p>
+(<code>macos-15-intel</code>). Every target uses Go 1.26.10 and Fyne v2.8.2.
+Repository attributes enforce LF line endings for text files on every target,
+including Windows checkouts with <code>core.autocrlf=true</code>; CI checks formatting
+without rewriting source files.</p>
 <p>Every native job checks formatting and module integrity, runs race-enabled tests
 with Fyne's software test driver, vets both the test and native configurations,
 and builds the actual Cgo/OpenGL desktop executable. CLI help and version smoke
