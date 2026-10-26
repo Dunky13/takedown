@@ -8,13 +8,13 @@ No source dependencies or licensing decisions are added by this tooling.
 ## Scope and ownership
 
 The tooling lives in `.github/`, `build/`, `scripts/`, `FyneApp.toml`, and
-`Makefile`. This document and its complete, offline HTML companion are the entry
-point. Existing build/test/check/cross-compile/clean Make targets are retained.
+`Makefile`. This document is the entry point.
+Existing build/test/check/cross-compile/clean Make targets are retained.
 The application code, dependency files, OAuth implementation, and policy hosting
 have separate responsibilities. Native CI produces unsigned packages for review;
 it does not publish releases or use signing credentials. Paid Windows signing is
 deferred. The manual signing workflow remains a separate, explicitly authorized
-operation. See [CI builds](CI-BUILDS.md) and its [offline HTML](CI-BUILDS.html) for
+operation. See [CI builds](CI-BUILDS.md) for
 build targets, artifact retrieval, and validation boundaries.
 
 ## Prerequisites

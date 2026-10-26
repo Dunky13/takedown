@@ -192,8 +192,8 @@ flat checkpoints keep their established paths, including partial-file resume.
 Conflicting legacy paths fail explicitly rather than merging unrelated bytes.
 
 Native CI and package tooling, user installation, signing prerequisites and
-checksum verification are documented in [RELEASING.md](RELEASING.md) and its
-[self-contained HTML](RELEASING.html). Local package generation, hosted CI,
+checksum verification are documented in [RELEASING.md](RELEASING.md).
+Local package generation, hosted CI,
 native platform runtime acceptance and real signing/notarization are separate
 evidence boundaries. Packaging never establishes Google project approval.
 

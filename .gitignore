@@ -9,3 +9,12 @@
 takedown-state.json*
 *.test
 coverage.out
+
+# Local HTML reports; Markdown documentation remains versioned.
+/docs/AUTOMATION.html
+/docs/CI-BUILDS.html
+/docs/HANDOFF.html
+/docs/RELEASING.html
+/docs/SIGNING-RESEARCH.html
+/docs/TOS-RESEARCH.html
+/internal/auth/HANDOFF.html

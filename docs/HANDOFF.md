@@ -100,5 +100,3 @@ affected path; the scan is not a claim that every dependency module is advisory-
    intended Windows or Linux target and test the intended network destination.
 
 The auth module's detailed integration reference is in internal/auth/HANDOFF.md.
-The standalone HTML version of this report contains the same full handoff and
-opens locally without a server or network access.
