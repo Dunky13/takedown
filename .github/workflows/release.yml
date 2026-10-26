@@ -102,6 +102,16 @@ jobs:
     needs: [prepare, native]
     if: needs.prepare.outputs.skip == 'false' && github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/release-macos.yml
+    # Explicit forwarding enables environment secret resolution in the called
+    # workflow. Only the approved release-signing job receives these values.
+    secrets:
+      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
     with:
       checkout_ref: ${{ needs.prepare.outputs.sha }}
       package_version: ${{ needs.prepare.outputs.package_version }}
