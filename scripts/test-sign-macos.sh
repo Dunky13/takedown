@@ -17,6 +17,24 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 mkdir "$TEST_WORK/tools" "$TEST_WORK/scratch"
 export REAL_OPENSSL REAL_DITTO REAL_PLUTIL REAL_RM
+# shellcheck source=scripts/macos-certificate-import.sh
+source "$ROOT/scripts/macos-certificate-import.sh"
+# Classify only complete known constants, never arbitrary numeric/private text.
+while IFS='|' read -r message status cause; do
+  printf 'security> security: SecKeychainItemImport: %s\n' "$message" > "$TEST_WORK/diagnostic-input"
+  diagnostic=$(macos_certificate_import_diagnostic "$TEST_WORK/diagnostic-input" 2>&1)
+  [[ $diagnostic == "sign-macos: keychain-import security_status=$status cause=$cause (allowlisted classification; raw output withheld)" ]]
+done <<'CASES'
+The user name or passphrase you entered is not correct.|-25293|authentication-failed
+MAC verification failed during PKCS12 import (wrong password?)|-25264|pkcs12-mac-verification-failed
+Unable to decode the provided data.|-26275|decode-failed
+Unknown format in import.|-25257|unknown-format
+User interaction is not allowed.|-25308|interaction-not-allowed
+One or more parameters passed to a function were not valid.|-50|invalid-parameters
+The user name or passphrase you entered is not correct. fixture-p12-password|unknown|unclassified
+arbitrary -25293 MUST-NOT-RETAIN|unknown|unclassified
+CASES
+echo 'PASS: import diagnostics emit only exact allowlisted Security constants/status mappings'
 REAL_OPENSSL=$(command -v openssl)
 REAL_DITTO=$(command -v ditto)
 REAL_PLUTIL=$(command -v plutil)
@@ -64,6 +82,15 @@ case $1 in
     printf 'private-stdin-command\n' >> "$MOCK_STATE/private-commands"
     [[ $MOCK_SCENARIO != keychain-unlock-failure || $line != unlock-keychain* ]] || { echo 'fixture-p12-password raw security error' >&2; exit 78; }
     [[ $MOCK_SCENARIO != keychain-partitions-failure || $line != set-key-partition-list* ]] || { echo 'fixture-p12-password raw security error' >&2; exit 79; }
+    if [[ $line == import* ]]; then
+      pattern='^import "[^"]+" -k "[^"]+" -x -P "[a-f0-9]{64}" -T /usr/bin/codesign$'
+      [[ $line =~ $pattern ]] || exit 99
+      case $MOCK_SCENARIO in
+        keychain-import-auth-failure) echo 'security: SecKeychainItemImport: The user name or passphrase you entered is not correct.' >&2; echo 'fixture-p12-password MUST-NOT-RETAIN' >&2; exit 1 ;;
+        keychain-import-unknown-failure) echo 'security: SecKeychainItemImport: arbitrary fixture-p12-password MUST-NOT-RETAIN -25293' >&2; exit 1 ;;
+      esac
+      exit 0
+    fi
     pattern='^(create-keychain|unlock-keychain) -p "([a-f0-9]{64})" "([^"]+)"$'
     if [[ $line =~ $pattern ]]; then
       if [[ ${BASH_REMATCH[1]} == create-keychain ]]; then
@@ -330,7 +357,7 @@ MOCK_SCENARIO=success
 run_signer
 [[ $(wc -l < "$MOCK_STATE/submits" | tr -d ' ') == 1 ]]
 [[ $(grep -c -- --force "$MOCK_STATE/codesigns") == 2 ]]
-[[ $(wc -l < "$MOCK_STATE/private-commands" | tr -d ' ') == 3 ]]
+[[ $(wc -l < "$MOCK_STATE/private-commands" | tr -d ' ') == 4 ]]
 [[ $(grep -c 'info 12345678-1234-1234-1234-123456789abc' "$MOCK_STATE/queries") == 2 ]]
 assert_private
 echo 'PASS: pending exits 75, same UUID continues to Accepted without signing or submitting again'
@@ -419,7 +446,7 @@ done
 unset NOTARY_CHECKPOINT_HOOK MOCK_CHECKPOINT_FAIL_STATE
 echo 'PASS: checkpoint failure stops at prepared/intent/UUID/verified boundaries, with no target promotion'
 
-for scenario in certificate-decode-failure security-stdin-failure keychain-unlock-failure keychain-partitions-failure; do
+for scenario in certificate-decode-failure security-stdin-failure keychain-unlock-failure keychain-partitions-failure keychain-import-auth-failure keychain-import-unknown-failure; do
   new_case "$scenario" diagnostics
   TARGET="$MOCK_STATE/takedown.app"
   if run_signer; then exit 1; fi
@@ -428,14 +455,28 @@ for scenario in certificate-decode-failure security-stdin-failure keychain-unloc
     security-stdin-failure) phase=keychain-create; code=77 ;;
     keychain-unlock-failure) phase=keychain-unlock; code=78 ;;
     keychain-partitions-failure) phase=keychain-partitions; code=79 ;;
+    keychain-import-*) phase=keychain-import; code=1 ;;
   esac
   grep -Fq "stage=app command=$phase exit=$code" "$MOCK_STATE/output"
   jq -e --arg phase "$phase" --arg code "$code" '.failure_phase==$phase and .failure_exit==$code' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
   [[ ! -e $MOCK_STATE/submits ]]
   cmp "$MOCK_STATE/keychains" "$MOCK_STATE/original-keychains"
+  case $scenario in
+    keychain-import-auth-failure) grep -Fq 'security_status=-25293 cause=authentication-failed' "$MOCK_STATE/output" ;;
+    keychain-import-unknown-failure) grep -Fq 'security_status=unknown cause=unclassified' "$MOCK_STATE/output" ;;
+  esac
   assert_private
+  if [[ $scenario == keychain-import-auth-failure ]]; then
+    jq -e '.state=="prepared" and .submission_id==null and .submitted_sha256=="" and .verified_sha256==""' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+    MOCK_SCENARIO=success
+    run_signer
+    jq -e --arg source "$NOTARY_SOURCE_SHA" '.state=="verified" and .source_commit==$source and .ci_run_id=="123" and .ci_run_attempt=="1"' "$NOTARY_EVIDENCE_DIR/app/receipt.json" >/dev/null
+    [[ $(wc -l < "$MOCK_STATE/submits" | tr -d ' ') == 1 ]]
+    cmp "$MOCK_STATE/keychains" "$MOCK_STATE/original-keychains"
+    assert_private
+  fi
 done
-echo 'PASS: private pre-submission command failures retain safe command/exit diagnostics and clean keychains'
+echo 'PASS: private pre-submission failures retain safe diagnostics, clean keychains and resume the same prepared receipt'
 
 # Exercise the real packager + signer in a disposable project, using the same
 # synthetic Apple/keychain tools. This proves publication remains transactional.
@@ -466,7 +507,7 @@ MOCK
 chmod +x "$TEST_WORK/tools/go" "$TEST_WORK/tools/hdiutil" "$TEST_WORK/tools/xattr"
 FIXTURE_ROOT="$TEST_WORK/package-project"
 mkdir -p "$FIXTURE_ROOT/scripts" "$FIXTURE_ROOT/assets" "$FIXTURE_ROOT/build/macos"
-cp "$ROOT/scripts/package-common.sh" "$ROOT/scripts/package-macos.sh" "$ROOT/scripts/sign-macos.sh" "$ROOT/scripts/keychain-lifecycle.sh" "$FIXTURE_ROOT/scripts/"
+cp "$ROOT/scripts/package-common.sh" "$ROOT/scripts/package-macos.sh" "$ROOT/scripts/sign-macos.sh" "$ROOT/scripts/keychain-lifecycle.sh" "$ROOT/scripts/macos-certificate-import.sh" "$FIXTURE_ROOT/scripts/"
 cp "$ROOT/build/macos/Info.plist" "$FIXTURE_ROOT/build/macos/"
 printf 'fixture icon\n' > "$FIXTURE_ROOT/assets/icon.icns"
 for file in README.md PRIVACY.md PRIVACY.html LICENSE NOTICE THIRD_PARTY_NOTICES.md; do

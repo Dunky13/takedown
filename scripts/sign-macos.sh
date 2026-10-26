@@ -45,6 +45,8 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/takedown-sign.XXXXXX")
 KEYCHAIN="$WORK/signing.keychain-db"
 # shellcheck source=scripts/keychain-lifecycle.sh
 source "$(dirname -- "$0")/keychain-lifecycle.sh"
+# shellcheck source=scripts/macos-certificate-import.sh
+source "$(dirname -- "$0")/macos-certificate-import.sh"
 KEYCHAIN_MUTATION_STARTED=false
 BASENAME="takedown-$RELEASE_VERSION-macos-$NOTARY_ARCH-${NOTARY_SOURCE_SHA:0:12}-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-0}-$STAGE.$EXT"
 SUBMISSION_ID='' SUBMITTED_SHA='' VERIFIED_SHA='' STATE='' FAILURE_PHASE='' FAILURE_EXIT='' TICKET_ATTEMPTS=0
@@ -82,6 +84,9 @@ receipt() {
 command_failed() {
   FAILURE_PHASE=$1 FAILURE_EXIT=$2
   printf 'sign-macos: stage=%s command=%s exit=%s (private output withheld)\n' "$STAGE" "$FAILURE_PHASE" "$FAILURE_EXIT" >&2
+  if [[ $FAILURE_PHASE == keychain-import ]]; then
+    macos_certificate_import_diagnostic "$WORK/command.log"
+  fi
   [[ -z $STATE ]] || receipt "$STATE"
   exit 1
 }
@@ -206,7 +211,7 @@ if [[ $STATE == prepared ]]; then
   [[ $result == 0 ]] || command_failed certificate-base64-decode "$result"
   [[ -s $WORK/certificate.p12 ]] || command_failed certificate-base64-decode 1
   run certificate-decode openssl pkcs12 -in "$WORK/certificate.p12" -passin env:MACOS_CERTIFICATE_PASSWORD -nodes -out "$WORK/import.pem"
-  run certificate-rewrap openssl pkcs12 -export -in "$WORK/import.pem" -out "$WORK/import.p12" -passout pass:
+  run certificate-rewrap macos_certificate_rewrap "$WORK/import.pem" "$WORK/import.p12" "$WORK/import-password"
   result=0
   keychain_capture_search_list > "$WORK/command.log" 2>&1 || result=$?
   [[ $result == 0 ]] || command_failed "$KEYCHAIN_CAPTURE_COMMAND" "$result"
@@ -229,14 +234,14 @@ if [[ $STATE == prepared ]]; then
   run keychain-permissions chmod 600 "$KEYCHAIN"
   run keychain-settings security set-keychain-settings -lut 21600 "$KEYCHAIN"
   run keychain-unlock keychain_secret unlock
-  run keychain-import security import "$WORK/import.p12" -k "$KEYCHAIN" -f pkcs12 -x -P '' -T /usr/bin/codesign
+  run keychain-import macos_certificate_import "$WORK/import.p12" "$KEYCHAIN" "$WORK/import-password"
   run keychain-partitions keychain_secret partitions
   run keychain-search-list security list-keychains -d user -s "$KEYCHAIN" ${ORIGINAL_KEYCHAINS[@]+"${ORIGINAL_KEYCHAINS[@]}"}
   result=0
   security find-identity -v -p codesigning "$KEYCHAIN" > "$WORK/identities.txt" 2> "$WORK/command.log" || result=$?
   [[ $result == 0 ]] || command_failed keychain-find-identity "$result"
   grep -Fq "\"$MACOS_SIGN_IDENTITY\"" "$WORK/identities.txt" || fail 'configured Developer ID identity is not available in the temporary keychain'
-  run certificate-remove rm -f "$WORK/certificate.p12" "$WORK/import.pem" "$WORK/import.p12"
+  run certificate-remove rm -f "$WORK/certificate.p12" "$WORK/import.pem" "$WORK/import.p12" "$WORK/import-password"
   if [[ $STAGE == app ]]; then
     run executable-sign codesign --force --timestamp --options runtime --keychain "$KEYCHAIN" --sign "$MACOS_SIGN_IDENTITY" "$CANDIDATE/Contents/MacOS/takedown"
     run app-sign codesign --force --timestamp --options runtime --keychain "$KEYCHAIN" --sign "$MACOS_SIGN_IDENTITY" "$CANDIDATE"

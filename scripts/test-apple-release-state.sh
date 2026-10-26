@@ -65,4 +65,14 @@ NOTARY_RELEASE_ID=8 reject inventory
 NOTARY_RELEASE_BODY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa reject inventory
 MOCK_REQUIRE_BINARY=true state get interrupted.txt "$TEST_WORK/recovered"
 cmp "$TEST_WORK/upload" "$TEST_WORK/recovered"
+# Another architecture may have an incomplete upload while this one restores
+# already acknowledged bytes. Required incomplete assets must never be reused.
+printf 'incomplete upload\n' > "$MOCK_REMOTE/in-flight.txt"
+pending_filter='map(if .name == "in-flight.txt" then .state="starter" else . end)'
+MOCK_LIST_FILTER="$pending_filter" state get interrupted.txt "$TEST_WORK/while-other-upload-pending"
+cmp "$TEST_WORK/upload" "$TEST_WORK/while-other-upload-pending"
+MOCK_LIST_FILTER="$pending_filter" reject get in-flight.txt "$TEST_WORK/incomplete"
+MOCK_LIST_FILTER="$pending_filter" reject put in-flight.txt "$TEST_WORK/upload"
+[[ $(grep -c 'POST .*name=in-flight.txt' "$MOCK_STATE/calls" || true) == 0 ]]
+MOCK_LIST_FILTER='map(.state="unknown")' reject inventory
 echo 'PASS: offline custody restore/sequence/run/arch, collision/fork/corruption/allowlist, stale uploads, receipt identity, interrupted writes and binary downloads'

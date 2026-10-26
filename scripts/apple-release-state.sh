@@ -54,7 +54,7 @@ inventory() {
   jq -e 'type == "array" and (map(.name) | length == (unique | length)) and
     (map(.id) | length == (unique | length)) and all(.[];
       (.id | type == "number" and . > 0 and floor == .) and
-      (.name | type == "string") and .state == "uploaded" and
+      (.name | type == "string") and (.state == "uploaded" or .state == "starter") and
       (.size | type == "number" and . >= 0 and floor == .))' "$WORK/assets.json" >/dev/null || fail 'invalid or duplicate draft assets'
   cache_assets
 }
@@ -66,7 +66,9 @@ asset_receipt() {
 }
 download() {
   local name=$1 output=$2 id size
-  jq -e --arg name "$name" '[.[] | select(.name == $name)] | if length == 1 then .[0] else error("missing asset") end' "$WORK/assets.json" > "$WORK/asset.json"
+  # Other architectures can have unrelated uploads in flight. The requested
+  # asset still needs an acknowledged upload before any of its bytes are used.
+  jq -e --arg name "$name" '[.[] | select(.name == $name)] | if length == 1 and .[0].state == "uploaded" then .[0] else error("missing, incomplete or ambiguous asset") end' "$WORK/assets.json" > "$WORK/asset.json"
   id=$(jq -r .id "$WORK/asset.json"); size=$(jq -r .size "$WORK/asset.json")
   release_identity
   gh api --allow-escape-sequences -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$id" > "$output"
