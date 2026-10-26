@@ -105,6 +105,18 @@ jq -e --arg source "$INPUT_SOURCE_SHA" '.source==$source and .artifact_id=="456"
   .architecture=="arm64" and .bundle_id=="io.github.dunky13.takedown" and
   (.binary_sha256|test("^[0-9a-f]{64}$"))' "$NOTARY_STAGING_DIR/input.json" >/dev/null
 grep -Fxq "binary=$NOTARY_STAGING_DIR/extracted/takedown.app/Contents/MacOS/takedown" "$GITHUB_OUTPUT"
+# Durable custody is usable after the original Actions artifact is unavailable;
+# its original digest/run metadata still governs the exact retained archive.
+jq '.artifacts' "$NOTARY_STAGING_DIR/artifacts.json" > "$TEST_ROOT/native.json"
+cp "$TEST_ROOT/artifact.zip" "$TEST_ROOT/durable.zip"
+export NOTARY_NATIVE_METADATA="$TEST_ROOT/native.json" NOTARY_NATIVE_ARCHIVE="$TEST_ROOT/durable.zip"
+FIXTURE_ARTIFACT_CASE=missing run_case
+printf 'corrupt\n' >> "$TEST_ROOT/durable.zip"
+reject 'artifact archive digest mismatch'
+cp "$TEST_ROOT/artifact.zip" "$TEST_ROOT/durable.zip"
+jq '.[0].workflow_run.id=999' "$TEST_ROOT/native.json" > "$TEST_ROOT/wrong-native.json"
+NOTARY_NATIVE_METADATA="$TEST_ROOT/wrong-native.json" reject 'expected one unexpired artifact bound to this source and run'
+unset NOTARY_NATIVE_METADATA NOTARY_NATIVE_ARCHIVE
 for mode in missing duplicate expired wrong-source wrong-run bad-digest; do
   export FIXTURE_ARTIFACT_CASE=$mode
   reject 'expected one unexpired artifact bound to this source and run'

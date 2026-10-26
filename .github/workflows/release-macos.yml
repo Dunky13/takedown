@@ -12,8 +12,18 @@ on:
       release_version:
         required: true
         type: string
-    # Callers must pass these names even when their values live only in the
-    # protected environment below. Environment values take precedence.
+      state_tag:
+        required: true
+        type: string
+      origin_run:
+        required: true
+        type: string
+      origin_attempt:
+        required: true
+        type: string
+    outputs:
+      ready:
+        value: ${{ jobs.readiness.outputs.ready }}
     secrets:
       MACOS_CERTIFICATE_P12_BASE64:
         required: true
@@ -35,27 +45,35 @@ permissions:
 
 jobs:
   sign:
-    # Preserve the protected-main boundary from the existing manual signer.
-    # The caller rejects unprotected main before starting any builds.
     if: github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ${{ matrix.os }}
     environment: release-signing
     permissions:
-      contents: read
+      contents: write
       actions: read
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel]
+        include:
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: amd64
     env:
       GOMAXPROCS: '2'
       GOFLAGS: -mod=readonly
       GOTOOLCHAIN: local
       CGO_ENABLED: '1'
-      # Available on both pinned runner images. The default 16.4 client has
-      # trapped during API-key authentication in the Hikyo release precedent.
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      NOTARY_SOURCE_SHA: ${{ inputs.checkout_ref }}
+      VERSION: ${{ inputs.package_version }}
+      RELEASE_VERSION: ${{ inputs.release_version }}
+      NOTARY_ARCH: ${{ matrix.arch }}
+      NOTARY_STATE_TAG: ${{ inputs.state_tag }}
+      ORIGIN_RUN: ${{ inputs.origin_run }}
+      ORIGIN_ATTEMPT: ${{ inputs.origin_attempt }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -66,34 +84,33 @@ jobs:
           go-version: '1.26.10'
           check-latest: false
           cache: false
-      - name: Verify the selected Apple toolchain
+      - name: Verify selected Apple toolchain
         run: |
-          [[ $GITHUB_RUN_ATTEMPT == 1 ]] || { echo 'Reconcile retained Apple receipts before retrying a signing stage; do not resubmit from a fresh runner.' >&2; exit 1; }
           test -d "$DEVELOPER_DIR"
           xcodebuild -version
           xcrun notarytool --version
           xcrun notarytool submit --help | grep -q -- '--wait/--no-wait'
           xcrun notarytool wait --help | grep -q -- '--timeout'
+          xcrun notarytool info --help | grep -q -- '--output-format'
+          xcrun notarytool history --help | grep -q -- '--output-format'
           xcrun notarytool log --help | grep -q 'output-path'
           xcrun --find stapler
-      - name: Verify the exact native CI artifact before loading credentials
+      - name: Restore durable custody and verify original native artifact
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_SOURCE_SHA: ${{ inputs.checkout_ref }}
-          VERSION: ${{ inputs.package_version }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
-          NOTARY_ARCH: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
           NOTARY_STAGING_DIR: ${{ runner.temp }}/signing-input
-        run: bash scripts/prepare-macos-signing.sh
-      - name: Sign and notarize the verified native binary
+          NOTARY_EVIDENCE_DIR: ${{ runner.temp }}/notary-evidence
+        run: |
+          env GITHUB_SHA="$NOTARY_SOURCE_SHA" GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash scripts/load-apple-input.sh
+          go build -mod=readonly -p 2 -o "$RUNNER_TEMP/releasectl" ./cmd/releasectl
+      - name: Continue exact Apple stages and verify installed final candidate
         env:
           BINARY: ${{ steps.source.outputs.binary }}
-          VERSION: ${{ inputs.package_version }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
           MODE: release
-          NOTARY_SOURCE_SHA: ${{ inputs.checkout_ref }}
-          NOTARY_ARCH: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+          RELEASECTL: ${{ runner.temp }}/releasectl
+          GH_TOKEN: ${{ github.token }}
           NOTARY_EVIDENCE_DIR: ${{ runner.temp }}/notary-evidence
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -102,42 +119,112 @@ jobs:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          NOTARY_YIELD_AFTER_SUBMIT: ${{ vars.APPLE_QUALIFY_CONTINUATION == 'true' && 'true' || 'false' }}
         run: |
-          mkdir -p "$NOTARY_EVIDENCE_DIR"
-          cp "$RUNNER_TEMP/signing-input/input.json" "$NOTARY_EVIDENCE_DIR/input.json"
-          bash scripts/package-macos.sh
-      - name: Verify final ZIP, DMG and copied application before publication
-        env:
-          RELEASE_VERSION: ${{ inputs.release_version }}
-          VERSION: ${{ inputs.package_version }}
-          NOTARY_ARCH: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          NOTARY_EVIDENCE_DIR: ${{ runner.temp }}/notary-evidence
-        run: bash scripts/verify-macos-package.sh
-      - name: Check signed artifact retention
-        run: bash scripts/check-artifact-retention.sh .github/workflows/release-macos.yml
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: signed-native-${{ runner.os }}-${{ runner.arch }}-${{ inputs.checkout_ref }}
-          path: |
-            dist/packages/**/*.zip
-            dist/packages/**/*.dmg
-            dist/packages/**/SHA256SUMS
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
-      - name: Preserve allowlisted Apple receipts and diagnostics
+          env GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash scripts/continue-apple-release.sh
+      - name: Preserve allowlisted failure receipts
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: macos-notarization-${{ runner.arch }}-${{ inputs.checkout_ref }}-${{ github.run_attempt }}
+          name: macos-notarization-${{ runner.arch }}-${{ inputs.checkout_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/notary-evidence/input.json
+            ${{ runner.temp }}/notary-evidence/checkpoint.json
             ${{ runner.temp }}/notary-evidence/acceptance.json
             ${{ runner.temp }}/notary-evidence/*/receipt.json
             ${{ runner.temp }}/notary-evidence/*/apple-log.json
-            ${{ runner.temp }}/notary-evidence/app/*.zip
-            ${{ runner.temp }}/notary-evidence/dmg/*.dmg
           if-no-files-found: warn
           retention-days: 7
-          compression-level: 0
+
+  acceptance:
+    needs: sign
+    if: "!cancelled() && needs.sign.result == 'success'"
+    permissions:
+      # GitHub draft assets require push-capable access; no Apple secrets here.
+      contents: write
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: amd64
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.checkout_ref }}
+      - name: Install and assess exact final bytes on fresh native runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NOTARY_SOURCE_SHA: ${{ inputs.checkout_ref }}
+          VERSION: ${{ inputs.package_version }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          NOTARY_STATE_TAG: ${{ inputs.state_tag }}
+          NOTARY_ARCH: ${{ matrix.arch }}
+          ORIGIN_RUN: ${{ inputs.origin_run }}
+          ORIGIN_ATTEMPT: ${{ inputs.origin_attempt }}
+          NOTARY_EVIDENCE_DIR: ${{ runner.temp }}/fresh-evidence
+          DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+        run: bash scripts/fresh-apple-acceptance.sh
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: macos-fresh-acceptance-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fresh-evidence/fresh-acceptance-${{ matrix.arch }}.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  readiness:
+    needs: acceptance
+    if: "!cancelled() && needs.acceptance.result == 'success'"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.checkout_ref }}
+      - name: Require both architecture checkpoints
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NOTARY_SOURCE_SHA: ${{ inputs.checkout_ref }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          NOTARY_STATE_TAG: ${{ inputs.state_tag }}
+          ORIGIN_RUN: ${{ inputs.origin_run }}
+          ORIGIN_ATTEMPT: ${{ inputs.origin_attempt }}
+        run: |
+          ready=true
+          for arch in arm64 amd64; do
+            env NOTARY_ARCH="$arch" GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash scripts/apple-release-state.sh restore "$RUNNER_TEMP/evidence-$arch"
+            if [[ ! -f $RUNNER_TEMP/evidence-$arch/acceptance.json || ! -f $RUNNER_TEMP/evidence-$arch/final/SHA256SUMS ]]; then ready=false; fi
+          done
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          echo "Both architecture final checkpoints ready: $ready" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        if: steps.check.outputs.ready == 'true'
+        with:
+          pattern: macos-fresh-acceptance-*-${{ github.run_attempt }}
+          path: .local/fresh-acceptance
+          merge-multiple: true
+      - name: Retain both fresh native acceptance receipts
+        if: steps.check.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NOTARY_STATE_TAG: ${{ inputs.state_tag }}
+        run: |
+          for arch in arm64 amd64; do
+            file="fresh-acceptance-$arch.json"
+            bash scripts/apple-release-state.sh put "fresh-acceptance-$arch-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" ".local/fresh-acceptance/$file"
+          done

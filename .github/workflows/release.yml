@@ -1,6 +1,10 @@
 name: Release and nightly
 
 on:
+  workflow_run:
+    workflows: [Native CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       bump:
@@ -10,77 +14,69 @@ on:
         default: patch
         options: [patch, minor, major, custom]
       custom_version:
-        description: 'Custom SemVer without v (custom only), e.g. 1.2.0-rc.1'
+        description: Custom SemVer without v (custom only)
         type: string
         required: false
   schedule:
     - cron: '23 2 * * *'
+    - cron: '*/20 * * * *'
 
 permissions:
   contents: read
 
-# Serialize planning through publication across both channels. Never cancel an
-# active release while signing or uploading assets.
 concurrency:
   group: release-publication
   cancel-in-progress: false
 
 jobs:
   prepare:
+    if: github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      # GitHub draft discovery requires push access. This job has no Apple inputs.
+      contents: write
+      actions: read
+      checks: read
     outputs:
       version: ${{ steps.plan.outputs.version }}
       package_version: ${{ steps.plan.outputs.package_version }}
       sha: ${{ steps.plan.outputs.sha }}
       skip: ${{ steps.plan.outputs.skip }}
+      resume: ${{ steps.plan.outputs.resume }}
+      state_tag: ${{ steps.plan.outputs.state_tag }}
+      origin_run: ${{ steps.plan.outputs.origin_run }}
+      origin_attempt: ${{ steps.plan.outputs.origin_attempt }}
+      channel: ${{ steps.plan.outputs.channel }}
     steps:
-      - name: Require main and preserve the stable signing boundary
-        env:
-          SOURCE_REF: ${{ github.ref }}
-          EVENT: ${{ github.event_name }}
-          PROTECTED: ${{ github.ref_protected }}
-        run: |
-          [[ $SOURCE_REF == refs/heads/main ]] || { echo 'Releases must run from main' >&2; exit 1; }
-          if [[ $EVENT == workflow_dispatch && $PROTECTED != true ]]; then
-            echo 'Protect main before publishing signed releases; signing policy is unchanged' >&2
-            exit 1
-          fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           fetch-depth: 0
-          ref: ${{ github.sha }}
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26.10'
           check-latest: false
           cache: false
-      - name: Select version and generate Conventional Commit release notes
+      - name: Resume original candidate or plan eligible trusted main
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ github.ref }}
           EVENT: ${{ github.event_name }}
-          BUMP: ${{ inputs.bump }}
+          TRIGGER_SOURCE: ${{ github.event.workflow_run.head_sha }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+          TRIGGER_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+          TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TRIGGER_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          TRIGGER_PATH: ${{ github.event.workflow_run.path }}
+          CONTINUATION_ONLY: ${{ github.event_name == 'schedule' && github.event.schedule != '23 2 * * *' }}
+          BUMP: ${{ inputs.bump || 'patch' }}
           CUSTOM: ${{ inputs.custom_version }}
-        run: |
-          kind=$BUMP
-          last=''
-          if [[ $EVENT == schedule ]]; then
-            kind=nightly
-            # Drafts and unrelated prereleases never advance the nightly marker.
-            # API failures must fail planning, rather than masquerade as no nightly.
-            gh api --paginate "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
-            last=$(bash scripts/select-last-nightly.sh "$RUNNER_TEMP/releases.json")
-          fi
-          go run -mod=readonly -p 2 ./cmd/releasectl plan --kind "$kind" --custom "$CUSTOM" --last-nightly "$last" --output "$RUNNER_TEMP/release-plan"
-          cat "$RUNNER_TEMP/release-plan/github-output" >> "$GITHUB_OUTPUT"
-          if grep -qx 'skip=true' "$RUNNER_TEMP/release-plan/github-output"; then
-            echo '### Nightly skipped: main has not changed since the last published nightly.' >> "$GITHUB_STEP_SUMMARY"
-          else
-            cat "$RUNNER_TEMP/release-plan/notes.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          PLAN_DIR: ${{ runner.temp }}/release-plan
+        run: bash scripts/prepare-apple-release.sh plan
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: steps.plan.outputs.skip == 'false'
         with:
@@ -91,22 +87,52 @@ jobs:
 
   native:
     needs: prepare
-    if: needs.prepare.outputs.skip == 'false'
+    if: needs.prepare.outputs.skip == 'false' && needs.prepare.outputs.resume == 'false'
     uses: ./.github/workflows/ci.yml
     with:
       checkout_ref: ${{ needs.prepare.outputs.sha }}
       package_version: ${{ needs.prepare.outputs.package_version }}
       release_version: ${{ needs.prepare.outputs.version }}
 
-  macos:
+  custody:
     needs: [prepare, native]
-    if: needs.prepare.outputs.skip == 'false' && github.event_name == 'workflow_dispatch'
+    if: >-
+      !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.skip == 'false' &&
+      (needs.native.result == 'success' || (needs.prepare.outputs.resume == 'true' && needs.native.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-plan
+          path: .local/release-plan
+      - name: Persist exact credential-free build before any Apple operation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NOTARY_STATE_TAG: ${{ needs.prepare.outputs.state_tag }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+          PLAN_DIR: .local/release-plan
+          ORIGIN_RUN: ${{ needs.prepare.outputs.origin_run }}
+          ORIGIN_ATTEMPT: ${{ needs.prepare.outputs.origin_attempt }}
+        run: env GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash scripts/prepare-apple-release.sh persist
+
+  macos:
+    needs: [prepare, native, custody]
+    if: >-
+      always() && needs.prepare.outputs.skip == 'false' &&
+      needs.custody.result == 'success'
+    permissions:
+      contents: write
       actions: read
     uses: ./.github/workflows/release-macos.yml
-    # Explicit forwarding enables environment secret resolution in the called
-    # workflow. Only the approved release-signing job receives these values.
     secrets:
       MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
       MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -119,16 +145,15 @@ jobs:
       checkout_ref: ${{ needs.prepare.outputs.sha }}
       package_version: ${{ needs.prepare.outputs.package_version }}
       release_version: ${{ needs.prepare.outputs.version }}
+      state_tag: ${{ needs.prepare.outputs.state_tag }}
+      origin_run: ${{ needs.prepare.outputs.origin_run }}
+      origin_attempt: ${{ needs.prepare.outputs.origin_attempt }}
 
   publish:
-    needs: [prepare, native, macos]
-    if: >-
-      always() && needs.prepare.result == 'success' &&
-      needs.prepare.outputs.skip == 'false' && needs.native.result == 'success' &&
-      ((github.event_name == 'schedule' && needs.macos.result == 'skipped') ||
-       (github.event_name == 'workflow_dispatch' && needs.macos.result == 'success'))
+    needs: [prepare, macos]
+    if: "!cancelled() && needs.prepare.result == 'success' && needs.macos.result == 'success' && needs.macos.outputs.ready == 'true'"
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -141,18 +166,14 @@ jobs:
           go-version: '1.26.10'
           check-latest: false
           cache: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: release-plan
-          path: .local/release-plan
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          pattern: '*-native-*'
-          path: .local/release-artifacts
-      - name: Verify all assets, create tag, and publish release
+      - name: Restore complete original candidate and publish exact bytes
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_CHANNEL: ${{ github.event_name == 'schedule' && 'nightly' || 'manual' }}
+          NOTARY_STATE_TAG: ${{ needs.prepare.outputs.state_tag }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
           EXPECTED_SHA: ${{ needs.prepare.outputs.sha }}
-        run: bash scripts/publish-release.sh .local/release-plan .local/release-artifacts
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          ORIGIN_RUN: ${{ needs.prepare.outputs.origin_run }}
+          ORIGIN_ATTEMPT: ${{ needs.prepare.outputs.origin_attempt }}
+        run: bash scripts/promote-apple-release.sh

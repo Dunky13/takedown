@@ -87,6 +87,7 @@ jobs:
           xcrun notarytool log --help | grep -q 'output-path'
           xcrun --find stapler
           bash scripts/prepare-macos-signing.sh
+          go build -mod=readonly -p 2 -o "$RUNNER_TEMP/releasectl" ./cmd/releasectl
       - name: macOS signed and notarized packages
         if: runner.os == 'macOS'
         shell: bash
@@ -95,6 +96,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           RELEASE_VERSION: ${{ inputs.version }}
           MODE: release
+          RELEASECTL: ${{ runner.temp }}/releasectl
           NOTARY_SOURCE_SHA: ${{ github.sha }}
           NOTARY_ARCH: arm64
           NOTARY_EVIDENCE_DIR: ${{ runner.temp }}/notary-evidence

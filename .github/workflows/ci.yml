@@ -122,6 +122,13 @@ jobs:
       - name: Offline R1 loss and collision regressions (synthetic fixtures only)
         if: runner.os != 'Windows'
         run: env -u VERSION -u RELEASE_VERSION bash scripts/test-release-r1.sh
+      - name: Offline durable Apple candidate custody and planning regressions
+        if: runner.os == 'Linux'
+        run: |
+          bash scripts/test-apple-release-state.sh
+          bash scripts/test-apple-custody-recovery.sh
+          bash scripts/test-prepare-apple-release.sh
+          bash scripts/test-apple-continuation.sh
       - name: Offline Apple submission and artifact handoff regressions
         if: runner.os == 'macOS'
         run: |

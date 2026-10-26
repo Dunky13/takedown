@@ -112,7 +112,8 @@ verification and destination encryption requirements still apply.
 
 Paid Windows signing is deferred. CI creates unsigned review packages without
 enrolling in a signing service or using credentials. macOS notarization and the
-manual signing workflow require separately authorized configuration and runs.
+release workflows require separately authorized configuration and runs. The
+owner-authorized unattended release graph is described in [release automation](RELEASE-FLOW.md).
 Unsigned downloads can trigger normal operating-system trust prompts.
 No public release, automatic update, or deployment is performed by Native CI.
 

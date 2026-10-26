@@ -17,9 +17,9 @@ deferred. The manual signing workflow remains a separate, explicitly authorized
 operation. See [CI builds](CI-BUILDS.md) for
 build targets, artifact retrieval, and validation boundaries.
 
-[Release automation](RELEASE-FLOW.md) adds manual patch/minor/major/custom
-versioning, Conventional Commit changelogs, signed macOS publication, and
-change-aware unsigned nightlies. Its activation and failure-recovery requirements
+[Release automation](RELEASE-FLOW.md) adds automatic protected-main patch releases,
+manual minor/major/custom versioning, Conventional Commit changelogs, signed macOS
+publication, and change-aware signed macOS nightlies. Its activation and recovery requirements
 are documented separately from these packaging primitives.
 
 ## Prerequisites
@@ -153,9 +153,8 @@ Packages use a fixed allowlist: the native executable, platform integration file
 README, privacy Markdown/HTML, build metadata, and an existing root LICENSE or
 COPYING file if one exists. The app receives no OAuth client JSON, client secret,
 token, browser profile, job data, signed download URL, or archive payload. No
-recursive repository bundling occurs. macOS clears removable checkout extended
-attributes before signing/archiving and normalizes bundle permissions. The OS may
-retain its system-managed provenance attributes.
+recursive repository bundling occurs. macOS preserves extended attributes,
+including quarantine, and normalizes bundle permissions before signing.
 
 A license is an owner decision. Missing licensing terms are not replaced with a
 template license or an assertion that distribution is authorized. Artifact
@@ -239,12 +238,13 @@ It signs the executable and app with hardened runtime and secure timestamps,
 checks the team ID and strict signatures, submits an app ZIP through `notarytool`,
 requires `Accepted`, and staples/validates the app ticket. It then builds, signs,
 notarizes and staples the DMG. The final ZIP is created from the stapled app.
-Notarization waits up to 30 minutes per submission; timeout is failure with no
-automatic resubmission. Temporary certificate, API key, and keychain are removed
-on exit, and cleanup failure is an error. No Apple credentials were exercised in
-local qualification. A timeout submission may still exist remotely and needs
-operator reconciliation before any separately authorized retry. When returned by
-Apple, the submission ID is printed in the caller/CI log even on wait failure.
+Notarization waits up to 30 minutes per submission. Pending work resumes from
+durable original UUIDs and signed bytes without resubmission. Temporary
+certificate, API key and keychain are removed on exit; cleanup failure is an
+error. Local synthetic qualification does not authenticate Apple credentials.
+Unknown-upload identity must be reconciled against history and diagnostic hashes;
+ambiguity stops automatic continuation. Submission IDs are retained in safe
+receipts and printed in CI logs.
 
 Windows restricts each temporary PFX directory to the current identity, signs the
 application, uses NSIS's uninstaller-finalization hook to sign the embedded
@@ -272,7 +272,7 @@ with credentials loaded. The helper reserves separate app and DMG evidence
 directories, retains descriptive signed upload archives, binds their hashes to
 Apple UUIDs, and fetches matching diagnostic logs even on success. It never
 automatically resubmits a reserved stage. See
-[submission evidence and recovery](RELEASE-FLOW.md#failure-recovery).
+[submission evidence and recovery](RELEASE-FLOW.md#apple-stages-and-automatic-continuation).
 
 After separate authorization, Windows release packaging uses
 `./scripts/package-windows.ps1 -Mode release -Version <numeric-version>` with the
@@ -280,11 +280,11 @@ private environment already loaded.
 
 ## Manual protected workflow setup
 
-Before use, the repository administrator must configure the `release-signing`
-environment with required reviewers, prevent self-review as appropriate, restrict
-it to protected `main`, protect the branch, and put signing secrets only in that
-environment. YAML cannot create or prove those server-side protections. No live
-environment was created or configured in this task.
+The owner authorized removal of the recurring `release-signing` reviewer for
+unattended releases. Retain its `main` deployment restriction, disabled
+administrator bypass and isolated environment secrets, together with protected
+main's required checks. YAML cannot create or prove those server-side protections;
+verify their live API settings separately.
 
 `signed-packages.yml` has only `workflow_dispatch`. It requires explicit
 `authorize_signing: true`, a numeric version, `refs/heads/main`, and a protected
