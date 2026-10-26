@@ -7,7 +7,7 @@ package_init linux
 need tar
 need gzip
 need sha256sum
-BASE="takedown-$VERSION-linux-$ARCH-$MODE"
+BASE="takedown-$RELEASE_VERSION-linux-$ARCH-$MODE"
 STAGE="$WORK/$BASE"
 mkdir -p "$STAGE/bin" "$STAGE/share/applications" "$STAGE/share/icons/hicolor/scalable/apps"
 cp "$WORK/takedown" "$STAGE/bin/takedown"

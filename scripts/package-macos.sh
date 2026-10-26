@@ -23,7 +23,7 @@ package_docs "$APP/Contents/Resources/docs"
 xattr -cr "$APP"
 chmod -R u+rwX,go+rX,go-w "$APP"
 if [[ $MODE == release ]]; then "$ROOT/scripts/sign-macos.sh" "$APP"; fi
-BASE="takedown-$VERSION-macos-$ARCH-$MODE"
+BASE="takedown-$RELEASE_VERSION-macos-$ARCH-$MODE"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$WORK/output/$BASE.zip"
 mkdir "$WORK/dmg"
 ditto "$APP" "$WORK/dmg/takedown.app"

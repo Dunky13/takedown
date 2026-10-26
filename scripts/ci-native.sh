@@ -23,8 +23,10 @@ go list -mod=readonly -deps ./cmd/takedown | grep -Fx 'fyne.io/fyne/v2/internal/
 mkdir -p bin
 suffix=''
 [[ $goos != windows ]] || suffix=.exe
+RELEASE_VERSION=${RELEASE_VERSION:-0.0.0}
+go run -mod=readonly -p 2 ./cmd/releasectl validate-version --version "$RELEASE_VERSION"
 go build -mod=readonly -p 2 -trimpath \
-  -ldflags '-X github.com/Dunky13/takedown/internal/cli.Version=0.0.0' \
+  -ldflags "-X github.com/Dunky13/takedown/internal/cli.Version=$RELEASE_VERSION" \
   -o "bin/takedown$suffix" ./cmd/takedown
 "bin/takedown$suffix" --version
 "bin/takedown$suffix" --help

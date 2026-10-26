@@ -64,6 +64,12 @@ download commands, and the exact native matrix, and
 and removal. A successful build does not establish interactive GUI or live
 Google/network-storage acceptance on that platform.
 
+[Release automation](docs/RELEASE-FLOW.md) provides manual patch/minor/major/custom
+releases (including custom prereleases), Conventional Commit changelogs, and
+daily nightlies that skip unchanged `main`. Manual release macOS packages are
+signed and notarized; Windows, Linux, and all nightly packages are unsigned.
+The workflow requires the repository setup described in that guide before use.
+
 ## Quickstart: Drive-delivered Takeout
 
 1. **Configure your Google project.** Follow Google's
