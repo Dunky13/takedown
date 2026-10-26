@@ -9,7 +9,10 @@ credential, or release publication is needed for these builds.</p>
 (<code>macos-15-intel</code>). Every target uses Go 1.26.10 and Fyne v2.8.2.
 Repository attributes enforce LF line endings for text files on every target,
 including Windows checkouts with <code>core.autocrlf=true</code>; CI checks formatting
-without rewriting source files.</p>
+without rewriting source files.
+The generated dependency-notice bundle is exempt from newline and whitespace
+normalization so quoted upstream legal text retains its original bytes. Its
+generator check verifies the complete bundle instead.</p>
 <p>Every native job checks formatting and module integrity, runs race-enabled tests
 with Fyne's software test driver, vets both the test and native configurations,
 and builds the actual Cgo/OpenGL desktop executable. CLI help and version smoke

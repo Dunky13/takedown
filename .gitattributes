@@ -1,3 +1,7 @@
 # Keep source, shell scripts and package metadata identical on every runner.
 # In particular, Windows core.autocrlf must not make gofmt reject the checkout.
 * text=auto eol=lf
+
+# Generated bundle quotes upstream legal text verbatim, including its original
+# CRLF and whitespace. The generator's -check verifies every byte instead.
+THIRD_PARTY_NOTICES.md -text -whitespace

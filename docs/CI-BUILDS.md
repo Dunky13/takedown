@@ -13,6 +13,9 @@ The target matrix covers Linux amd64 (`ubuntu-24.04`), Windows amd64
 Repository attributes enforce LF line endings for text files on every target,
 including Windows checkouts with `core.autocrlf=true`; CI checks formatting
 without rewriting source files.
+The generated dependency-notice bundle is exempt from newline and whitespace
+normalization so quoted upstream legal text retains its original bytes. Its
+generator check verifies the complete bundle instead.
 
 Every native job checks formatting and module integrity, runs race-enabled tests
 with Fyne's software test driver, vets both the test and native configurations,
