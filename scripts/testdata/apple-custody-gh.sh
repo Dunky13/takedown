@@ -46,7 +46,7 @@ case "$method $endpoint" in
       rm "$MOCK_STATE/wrote-asset"; echo '[]'
     else
       find "$MOCK_STATE/assets/" -type f | LC_ALL=C sort | while IFS= read -r file; do receipt "$file"; done | jq -s .
-    fi ;;
+    fi | jq "${MOCK_LIST_FILTER:-.}" ;;
   'POST https://uploads.github.com/repos/'*'/releases/7/assets?name='*)
     [[ $content_type == 'Content-Type: application/octet-stream' ]] || exit 91
     name=${endpoint##*name=}

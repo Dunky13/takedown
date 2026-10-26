@@ -135,6 +135,7 @@ jobs:
       - name: Offline Apple submission and artifact handoff regressions
         if: runner.os == 'macOS'
         run: |
+          bash scripts/test-macos-certificate-import.sh
           bash scripts/test-sign-macos.sh
           bash scripts/test-prepare-macos-signing.sh
           bash scripts/test-verify-macos-package.sh
