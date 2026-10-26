@@ -40,6 +40,9 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ${{ matrix.os }}
     environment: release-signing
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -50,6 +53,9 @@ jobs:
       GOFLAGS: -mod=readonly
       GOTOOLCHAIN: local
       CGO_ENABLED: '1'
+      # Available on both pinned runner images. The default 16.4 client has
+      # trapped during API-key authentication in the Hikyo release precedent.
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -60,11 +66,35 @@ jobs:
           go-version: '1.26.10'
           check-latest: false
           cache: false
-      - name: Build, sign and notarize macOS packages
+      - name: Verify the selected Apple toolchain
+        run: |
+          [[ $GITHUB_RUN_ATTEMPT == 1 ]] || { echo 'Reconcile retained Apple receipts before retrying a signing stage; do not resubmit from a fresh runner.' >&2; exit 1; }
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun notarytool --version
+          xcrun notarytool submit --help | grep -q -- '--wait/--no-wait'
+          xcrun notarytool wait --help | grep -q -- '--timeout'
+          xcrun notarytool log --help | grep -q 'output-path'
+          xcrun --find stapler
+      - name: Verify the exact native CI artifact before loading credentials
+        id: source
         env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SOURCE_SHA: ${{ inputs.checkout_ref }}
+          VERSION: ${{ inputs.package_version }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          NOTARY_ARCH: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+          NOTARY_STAGING_DIR: ${{ runner.temp }}/signing-input
+        run: bash scripts/prepare-macos-signing.sh
+      - name: Sign and notarize the verified native binary
+        env:
+          BINARY: ${{ steps.source.outputs.binary }}
           VERSION: ${{ inputs.package_version }}
           RELEASE_VERSION: ${{ inputs.release_version }}
           MODE: release
+          NOTARY_SOURCE_SHA: ${{ inputs.checkout_ref }}
+          NOTARY_ARCH: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+          NOTARY_EVIDENCE_DIR: ${{ runner.temp }}/notary-evidence
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
@@ -72,7 +102,18 @@ jobs:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: bash scripts/package-macos.sh
+        run: |
+          mkdir -p "$NOTARY_EVIDENCE_DIR"
+          cp "$RUNNER_TEMP/signing-input/input.json" "$NOTARY_EVIDENCE_DIR/input.json"
+          bash scripts/package-macos.sh
+      - name: Verify final ZIP, DMG and copied application before publication
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          VERSION: ${{ inputs.package_version }}
+          NOTARY_ARCH: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          NOTARY_EVIDENCE_DIR: ${{ runner.temp }}/notary-evidence
+        run: bash scripts/verify-macos-package.sh
       - name: Check signed artifact retention
         run: bash scripts/check-artifact-retention.sh .github/workflows/release-macos.yml
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -83,5 +124,20 @@ jobs:
             dist/packages/**/*.dmg
             dist/packages/**/SHA256SUMS
           if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Preserve allowlisted Apple receipts and diagnostics
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: macos-notarization-${{ runner.arch }}-${{ inputs.checkout_ref }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/notary-evidence/input.json
+            ${{ runner.temp }}/notary-evidence/acceptance.json
+            ${{ runner.temp }}/notary-evidence/*/receipt.json
+            ${{ runner.temp }}/notary-evidence/*/apple-log.json
+            ${{ runner.temp }}/notary-evidence/app/*.zip
+            ${{ runner.temp }}/notary-evidence/dmg/*.dmg
+          if-no-files-found: warn
           retention-days: 7
           compression-level: 0

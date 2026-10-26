@@ -101,6 +101,9 @@ jobs:
   macos:
     needs: [prepare, native]
     if: needs.prepare.outputs.skip == 'false' && github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/release-macos.yml
     # Explicit forwarding enables environment secret resolution in the called
     # workflow. Only the approved release-signing job receives these values.

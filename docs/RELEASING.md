@@ -264,11 +264,19 @@ Apple flags were checked using installed `security`, `codesign`, `notarytool`,
 `stapler`, `plutil`, and `hdiutil` help; see also Apple's
 [notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
 
-After separate authorization, local release packaging uses
-`make package-macos MODE=release PACKAGE_VERSION=<numeric-version>` or
+macOS release mode requires a verified prebuilt `BINARY`, `RELEASE_VERSION`,
+`NOTARY_SOURCE_SHA`, `NOTARY_ARCH`, and an absolute persistent
+`NOTARY_EVIDENCE_DIR`, in addition to the private signing inputs. Use the protected
+workflow for the complete artifact handoff and acceptance checks; do not rebuild
+with credentials loaded. The helper reserves separate app and DMG evidence
+directories, retains descriptive signed upload archives, binds their hashes to
+Apple UUIDs, and fetches matching diagnostic logs even on success. It never
+automatically resubmits a reserved stage. See
+[submission evidence and recovery](RELEASE-FLOW.md#failure-recovery).
+
+After separate authorization, Windows release packaging uses
 `./scripts/package-windows.ps1 -Mode release -Version <numeric-version>` with the
-private environment already loaded. These are operational examples, not commands
-executed by this implementation task.
+private environment already loaded.
 
 ## Manual protected workflow setup
 

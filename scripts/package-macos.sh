@@ -3,8 +3,9 @@ set -euo pipefail
 # shellcheck source=scripts/package-common.sh
 source "$(dirname -- "$0")/package-common.sh"
 
-# Release mode always signs AND notarizes. Validate credentials before building.
+# Release mode signs and notarizes a binary from the credential-free build.
 if [[ ${MODE:-local} == release ]]; then
+  [[ -n ${BINARY:-} ]] || fail 'release signing requires a verified prebuilt BINARY'
   "$(dirname -- "$0")/sign-macos.sh" --check
 fi
 package_init darwin
