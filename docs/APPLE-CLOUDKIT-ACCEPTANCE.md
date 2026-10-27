@@ -129,6 +129,16 @@ the original failure still blocks acceptance. If the mount remains attached,
 cleanup leaves its private directory in place rather than recursing into it.
 Focused fixtures cover both a recovered detach and persistent detach failure.
 
+Independent review identified additional failure-test gaps. Root's terminal-write
+fixture exposed Bash conditional cleanup suppressing automatic error exit inside
+the state helper. The helper now explicitly returns on failed JSON creation or
+rename, preserving the last valid pending state and issuing no acknowledgement
+for that failed transition. Additional coverage injects final-success checkpoint
+failure, acceptance receipt write/rename failure, detach failure while leaving a
+copied-app pending result, structurally valid foreign bindings, and publication
+of fully bound legacy evidence without the new acceptance state. None of these
+failures can issue acceptance or reset the persistent recovery budget.
+
 ## Producer and consumer integration
 
 `apple-release-state.sh` now permits only the additional exact filename

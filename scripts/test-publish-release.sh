@@ -214,6 +214,16 @@ reset_fixture auto '1.2.1'
 publish
 grep -q -- '--latest=true' "$MOCK_STATE/calls"
 
+# Pre-policy candidates remain publishable only through every original
+# signer/Accepted-log/native/fresh-acceptance binding and remote-byte gate.
+reset_fixture manual
+for arch in arm64 amd64; do
+  rm "$WORK/artifacts/macos-evidence-$arch/acceptance-state.json"
+done
+publish
+[[ $(jq -r .draft "$MOCK_STATE/release") == false && $(jq length "$MOCK_STATE/assets") == 8 ]]
+echo 'PASS: legacy evidence without final acceptance state retains all original publication gates'
+
 reset_fixture manual
 file="$WORK/artifacts/${names[0]}/takedown-$version-${names[0]}"
 printf corrupted >> "$file"

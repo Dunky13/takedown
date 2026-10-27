@@ -34,8 +34,8 @@ checkpoint() {
 }
 acceptance_state() {
   jq --arg state "$1" --argjson attempts "$ATTEMPTS" --arg failure "$FAILURE_CLASS" \
-    --argjson binding "$BINDING_JSON" -n '$binding + {schema:1,state:$state,attempts:$attempts,failure_class:$failure}' > "$NOTARY_EVIDENCE_DIR/.acceptance-state.tmp"
-  mv "$NOTARY_EVIDENCE_DIR/.acceptance-state.tmp" "$NOTARY_EVIDENCE_DIR/acceptance-state.json"
+    --argjson binding "$BINDING_JSON" -n '$binding + {schema:1,state:$state,attempts:$attempts,failure_class:$failure}' > "$NOTARY_EVIDENCE_DIR/.acceptance-state.tmp" || return 1
+  mv "$NOTARY_EVIDENCE_DIR/.acceptance-state.tmp" "$NOTARY_EVIDENCE_DIR/acceptance-state.json" || return 1
   checkpoint
 }
 cleanup() {

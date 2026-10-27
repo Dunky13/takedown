@@ -16,9 +16,30 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 mkdir -p "$TEST_WORK/tools" "$TEST_WORK/scratch" "$TEST_WORK/repo/scripts"
 cp "$ROOT/scripts/verify-macos-package.sh" "$ROOT/scripts/macos-ticket-policy.sh" "$ROOT/scripts/continue-apple-release.sh" "$ROOT/scripts/apple-stages-verified.sh" "$ROOT/scripts/apple-acceptance-ready.sh" "$ROOT/scripts/fresh-apple-acceptance.sh" "$TEST_WORK/repo/scripts/"
-export REAL_RM
+export REAL_RM REAL_JQ REAL_MV MOCK_WRITE_FAILURE MOCK_DETACH_FAILURE
 REAL_RM=$(command -v rm)
+REAL_JQ=$(command -v jq)
+REAL_MV=$(command -v mv)
+MOCK_WRITE_FAILURE='' MOCK_DETACH_FAILURE=false
 export MOCK_NATIVE_OUTPUT="$ROOT/scripts/testdata/stapler-cloudkit-lost.txt"
+cat > "$TEST_WORK/tools/jq" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ( ${MOCK_WRITE_FAILURE:-} == receipt-write && ${!#} == *'checks:['* ) ||
+      ( ${MOCK_WRITE_FAILURE:-} == terminal-write && $* == *'--arg state blocked'* ) ]]; then
+  printf '{partial'
+  exit 17
+fi
+exec "$REAL_JQ" "$@"
+MOCK
+cat > "$TEST_WORK/tools/mv" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${MOCK_WRITE_FAILURE:-} == receipt-rename && $1 == */.acceptance.tmp ]]; then exit 18; fi
+if [[ ${MOCK_WRITE_FAILURE:-} == terminal-rename && $1 == */.acceptance-state.tmp ]] &&
+  grep -q '"state": "blocked"' "$1"; then exit 19; fi
+exec "$REAL_MV" "$@"
+MOCK
 cat > "$TEST_WORK/tools/uname" <<'MOCK'
 #!/usr/bin/env bash
 echo Darwin
@@ -80,7 +101,7 @@ case $1 in
       echo 'fixture detach failure' >&2
       exit 1
     fi
-    [[ $MOCK_SCENARIO != detach-failure ]] || { echo 'fixture detach failure' >&2; exit 1; }
+    [[ $MOCK_SCENARIO != detach-failure && ${MOCK_DETACH_FAILURE:-false} != true ]] || { echo 'fixture detach failure' >&2; exit 1; }
     ;;
   *) exit 99 ;;
 esac
@@ -173,8 +194,11 @@ printf '{"stale":true}\n' > "$NOTARY_EVIDENCE_DIR/acceptance.json"
 cat > "$TEST_WORK/repo/scripts/apple-checkpoint.sh" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
-cp "$1/acceptance-state.json" "$MOCK_STATE/checkpoint-state.json"
+state=$(jq -r .state "$1/acceptance-state.json")
+printf '%s\n' "$state" >> "$MOCK_STATE/checkpoint-attempts"
 [[ ${MOCK_CHECKPOINT_FAIL:-false} != true ]] || exit 88
+[[ ${MOCK_CHECKPOINT_FAIL:-false} != verified || $state != verified ]] || exit 88
+cp "$1/acceptance-state.json" "$MOCK_STATE/checkpoint-state.json"
 MOCK
 cat > "$TEST_WORK/repo/scripts/package-macos.sh" <<'MOCK'
 #!/usr/bin/env bash
@@ -232,6 +256,36 @@ fresh_native() {
   NOTARY_EVIDENCE_DIR="$MOCK_STATE/fresh-$1" ORIGIN_RUN=123 ORIGIN_ATTEMPT=1 GITHUB_RUN_ID=777 GITHUB_RUN_ATTEMPT=2 \
     bash "$TEST_WORK/repo/scripts/fresh-apple-acceptance.sh" > "$MOCK_STATE/output" 2>&1
 }
+write_boundary_cases() {
+  local mode
+  for mode in final-checkpoint receipt-write receipt-rename terminal-write terminal-rename; do
+    seed_native "write-$mode"
+    MOCK_SCENARIO=success MOCK_WRITE_FAILURE='' MOCK_CHECKPOINT_FAIL=false
+    case $mode in
+      final-checkpoint) MOCK_CHECKPOINT_FAIL=verified ;;
+      terminal-*) MOCK_WRITE_FAILURE=$mode MOCK_SCENARIO=codesign-failure ;;
+      *) MOCK_WRITE_FAILURE=$mode ;;
+    esac
+    if continue_native; then echo "unexpected acceptance after $mode failure" >&2; exit 1; fi
+    MOCK_WRITE_FAILURE='' MOCK_CHECKPOINT_FAIL=false
+    [[ ! -f $NOTARY_EVIDENCE_DIR/acceptance.json && ! -f $NOTARY_EVIDENCE_DIR/fresh-acceptance-$NOTARY_ARCH.json ]]
+    if [[ $mode == terminal-* ]]; then
+      # Conditional cleanup must not move a failed/partial state write or
+      # acknowledge an old pending receipt after a failed terminal rename.
+      jq -e '.state=="pending"' "$NOTARY_EVIDENCE_DIR/acceptance-state.json" >/dev/null
+      [[ $(wc -l < "$MOCK_STATE/checkpoint-attempts") -eq 1 ]]
+    elif [[ $mode == final-checkpoint ]]; then
+      jq -e '.state=="pending"' "$MOCK_STATE/checkpoint-state.json" >/dev/null
+      if bash "$TEST_WORK/repo/scripts/apple-acceptance-ready.sh" "$NOTARY_EVIDENCE_DIR"; then exit 1; fi
+    else
+      jq -e '.state=="blocked"' "$NOTARY_EVIDENCE_DIR/acceptance-state.json" >/dev/null
+    fi
+    assert_cleanup
+    echo "PASS: $mode failure cannot issue acceptance or acknowledge a failed state transition"
+  done
+}
+write_boundary_cases
+[[ ${ACCEPTANCE_TEST_GROUP:-all} != write-boundaries ]] || exit 0
 for variant in arm64:zip arm64:dmg arm64:copied amd64:zip amd64:dmg amd64:copied; do
   NOTARY_ARCH=${variant%%:*}
   point=${variant#*:}
@@ -316,6 +370,18 @@ jq -e '.state=="blocked"' "$NOTARY_EVIDENCE_DIR/acceptance-state.json" >/dev/nul
 [[ -z $(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d -name 'takedown-acceptance.*' -print) ]]
 echo 'PASS: final detach failure retains mount ownership, retries cleanup, and cannot accept'
 
+seed_native pending-detach-failure
+MOCK_SCENARIO=cloudkit MOCK_FAIL_TARGET=copied MOCK_DETACH_FAILURE=true
+if continue_native; then exit 1; fi
+MOCK_DETACH_FAILURE=false MOCK_FAIL_TARGET=zip
+[[ $(cat "$MOCK_STATE/mount-calls") == $'attach\ndetach' ]]
+[[ ! -f $NOTARY_EVIDENCE_DIR/acceptance.json ]]
+jq -e '.state=="blocked" and .attempts==1' "$MOCK_STATE/checkpoint-state.json" >/dev/null
+retained_work=$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d -name 'takedown-acceptance.*' -print)
+[[ -n $retained_work && -d $retained_work/mount/takedown.app ]]
+"$REAL_RM" -rf -- "$retained_work"
+echo 'PASS: copied-app pending transport failure becomes terminal when owned detach fails, without recursive mounted-tree cleanup'
+
 # Binding changes cannot reset pending recovery or cause any native operation.
 for field in source_commit version architecture ci_run_id ci_run_attempt team_id zip_sha256 dmg_sha256 input_sha256 app_receipt_sha256 dmg_receipt_sha256; do
   seed_native "binding-$field"
@@ -328,6 +394,29 @@ for field in source_commit version architecture ci_run_id ci_run_attempt team_id
   if continue_native; then exit 1; fi
   [[ $(wc -l < "$MOCK_STATE/trust-calls") == "$calls" && ! -f $NOTARY_EVIDENCE_DIR/acceptance.json ]]
 done
+for field in source_commit version architecture ci_run_id ci_run_attempt team_id zip_sha256 dmg_sha256 input_sha256 app_receipt_sha256 dmg_receipt_sha256; do
+  seed_native "foreign-$field"
+  MOCK_SCENARIO=cloudkit
+  continue_native
+  calls=$(wc -l < "$MOCK_STATE/trust-calls")
+  case $field in
+    source_commit) foreign=2222222222222222222222222222222222222222 ;;
+    version) foreign=0.0.2 ;;
+    architecture) foreign=amd64 ;;
+    ci_run_id) foreign=124 ;;
+    ci_run_attempt) foreign=2 ;;
+    team_id) foreign=ZZZZZZZZZZ ;;
+    *) foreign=2222222222222222222222222222222222222222222222222222222222222222 ;;
+  esac
+  jq --arg key "$field" --arg foreign "$foreign" '.[$key]=$foreign' "$NOTARY_EVIDENCE_DIR/acceptance-state.json" > "$MOCK_STATE/change.json"
+  mv "$MOCK_STATE/change.json" "$NOTARY_EVIDENCE_DIR/acceptance-state.json"
+  # The refusal must come from exact binding, not schema validation.
+  bash -c 'source "$1"; macos_acceptance_state_valid "$2"' _ "$TEST_WORK/repo/scripts/macos-ticket-policy.sh" "$NOTARY_EVIDENCE_DIR/acceptance-state.json"
+  MOCK_SCENARIO=success
+  if continue_native; then exit 1; fi
+  [[ $(wc -l < "$MOCK_STATE/trust-calls") == "$calls" && ! -f $NOTARY_EVIDENCE_DIR/acceptance.json ]]
+done
+echo 'PASS: structurally valid but foreign candidate, archive and receipt bindings refuse native recovery'
 seed_native missing-finals
 MOCK_SCENARIO=cloudkit
 continue_native
