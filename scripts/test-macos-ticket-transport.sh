@@ -19,14 +19,26 @@ anchor=''
 if [[ ${1:-} == -a ]]; then anchor=$2; shift 2; fi
 case "$*" in
   '-s rules')
-    if [[ -z $anchor ]]; then cat "$m/root"; else
+    if [[ -z $anchor ]]; then
+      cat "$m/root"
+      if [[ ${MOCK_LOAD_ROOT_DRIFT:-false} == true && -f $m/owned ]]; then echo 'pass out quick all'; fi
+    else
+      if [[ ${MOCK_RULE_CAPTURE_FAIL:-false} == true && -f $m/rules ]]; then
+        echo 'mock-secret partial readback'; exit 7
+      fi
       [[ ! -f $m/rules ]] || cat "$m/rules"
       if [[ ${MOCK_BAD_READBACK:-false} == true && -f $m/rules ]]; then echo 'pass out all'; fi
     fi ;;
   '-s Anchors')
     if [[ $anchor == com.apple ]]; then
       cat "$m/anchors"
-      [[ ! -s $m/rules ]] || cat "$m/owned"
+      if [[ -s $m/rules || ( ${MOCK_KEEP_EMPTY_ANCHOR:-false} == true && -f $m/owned ) ]]; then
+        if [[ ${MOCK_QUALIFIED_ANCHORS:-false} == true ]]; then
+          sed 's|^|com.apple/|' "$m/owned"
+        else
+          cat "$m/owned"
+        fi
+      fi
     fi ;;
   '-s info') printf 'Status: %s                              Debug: Urgent\n' "$(cat "$m/enabled")" ;;
   '-s References')
@@ -64,7 +76,7 @@ chmod +x "$MACOS_TICKET_TRANSPORT_TEST_ROOT/pfctl"
 helper() {
   helper_result=0
   bash "$ROOT/scripts/macos-ticket-transport.sh" "$@" > "$TEST_WORK/log" 2>&1 || helper_result=$?
-  if grep -Eq '987654321123456789|111222333444555666|mock-secret|Process Name' "$TEST_WORK/log"; then
+  if grep -Eq '987654321123456789|111222333444555666|mock-secret|Process Name|000[.]takedown-|900[.]service' "$TEST_WORK/log"; then
     echo 'FAIL: private PF/token output escaped' >&2; exit 1
   fi
   return "$helper_result"
@@ -85,6 +97,163 @@ preserved() {
   cmp "$MACOS_TICKET_TRANSPORT_TEST_ROOT/root" "$(state_dir)/root.before"
   cmp "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs" "$TEST_WORK/refs.before"
 }
+# These are hypothesis injections, not captured hosted PF output. The real
+# lifecycle must identify its failing predicate without accepting new formats
+# or exposing private readbacks. Run alone for a small red/green feedback loop.
+diagnostic() {
+  if ! grep -Fxq "ticket-transport: phase=$1 $2=false" "$TEST_WORK/log"; then
+    printf 'FAIL: missing readback diagnostic phase=%s predicate=%s\n' "$1" "$2" >&2
+    exit 1
+  fi
+  # Only fixed, allowlisted phase/predicate booleans may use the new prefix.
+  if grep '^ticket-transport: phase=' "$TEST_WORK/log" | grep -Ev '^ticket-transport: phase=(setup-load|active|cleanup|post-cleanup) ((rule|root|anchors|references|status|owned-empty|token)=(true|false)|shape=(rule|root|anchors) available=false|shape=(rule|root) available=true lines=[0-9]+ sha256=[0-9a-f]{64}|shape=anchors available=true lines=[0-9]+ owned-leaf=[0-9]+ owned-qualified=[0-9]+ remaining-before=(true|false))$'; then
+    echo 'FAIL: non-allowlisted readback diagnostic' >&2; exit 1
+  fi
+}
+shape_diagnostic() {
+  if ! grep -Fxq "$1" "$TEST_WORK/log"; then
+    printf 'FAIL: missing safe shape diagnostic: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+for predicate in rule root anchors; do
+  reset_fixture
+  cp "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs" "$TEST_WORK/refs.before"
+  case $predicate in
+    rule) MOCK_BAD_READBACK=true refuse setup ;;
+    root) MOCK_LOAD_ROOT_DRIFT=true refuse setup ;;
+    anchors) MOCK_QUALIFIED_ANCHORS=true refuse setup ;;
+  esac
+  diagnostic setup-load "$predicate"
+  if [[ $predicate == anchors ]]; then
+    shape_diagnostic 'ticket-transport: phase=setup-load shape=anchors available=true lines=2 owned-leaf=0 owned-qualified=1 remaining-before=true'
+  fi
+  [[ ! -f $(state_dir)/enable-attempted && ! -f $MACOS_TICKET_TRANSPORT_TEST_ROOT/token ]]
+  helper cleanup
+  preserved Enabled
+done
+printf 'PASS: setup readback failures identify exact predicate before reference acquisition\n'
+reset_fixture
+cp "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs" "$TEST_WORK/refs.before"
+MOCK_RULE_CAPTURE_FAIL=true refuse setup
+diagnostic setup-load rule
+shape_diagnostic 'ticket-transport: phase=setup-load shape=rule available=false'
+[[ ! -f $(state_dir)/enable-attempted && ! -f $MACOS_TICKET_TRANSPORT_TEST_ROOT/token ]]
+helper cleanup
+preserved Enabled
+printf 'PASS: failed capture exposes no partial or stale shape data\n'
+for predicate in rule root anchors references status token; do
+  reset_fixture; helper setup
+  case $predicate in
+    rule) MOCK_BAD_READBACK=true refuse check ;;
+    root)
+      echo 'pass out quick all' >> "$MACOS_TICKET_TRANSPORT_TEST_ROOT/root"
+      refuse check
+      cp "$(state_dir)/root.before" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/root" ;;
+    anchors) MOCK_QUALIFIED_ANCHORS=true refuse check ;;
+    references)
+      echo 'unsupported mock-secret reference format' >> "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs"
+      refuse check
+      cp "$TEST_WORK/refs.before" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs" ;;
+    status)
+      echo Disabled > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/enabled"
+      refuse check
+      echo Enabled > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/enabled" ;;
+    token)
+      cp "$(state_dir)/enable-output" "$TEST_WORK/enable.saved"
+      echo 'mock-secret unsupported token' > "$(state_dir)/enable-output"
+      refuse check
+      cp "$TEST_WORK/enable.saved" "$(state_dir)/enable-output" ;;
+  esac
+  diagnostic active "$predicate"
+  [[ ! -f $(state_dir)/cleaned ]]
+  helper cleanup
+done
+printf 'PASS: active readbacks identify predicate and withhold success\n'
+for predicate in root references status owned-empty anchors; do
+  reset_fixture; helper setup; helper cleanup
+  # Re-enter restoration without mutation to isolate each preservation gate.
+  mv "$(state_dir)/load-attempted" "$TEST_WORK/load.saved"
+  for phase in cleanup post-cleanup; do
+    if [[ $phase == cleanup ]]; then rm "$(state_dir)/cleaned"; fi
+    case $predicate in
+      root) echo 'pass out quick all' >> "$MACOS_TICKET_TRANSPORT_TEST_ROOT/root" ;;
+      references) echo 'unsupported mock-secret reference format' >> "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs" ;;
+      status) echo Disabled > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/enabled" ;;
+      owned-empty)
+        printf 'pass out all\n' > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/rules" ;;
+      anchors) printf '950.foreign-mock-secret\n' >> "$MACOS_TICKET_TRANSPORT_TEST_ROOT/anchors" ;;
+    esac
+    calls=$(wc -l < "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls")
+    refuse cleanup
+    diagnostic "$phase" "$predicate"
+    if [[ $predicate == anchors ]]; then
+      shape_diagnostic "ticket-transport: phase=$phase shape=anchors available=true lines=2 owned-leaf=0 owned-qualified=0 remaining-before=false"
+    fi
+    tail -n "+$((calls + 1))" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls" > "$TEST_WORK/diagnostic.calls"
+    if grep -Eq -- '(^| )(-f|-F|-E|-X)( |$)' "$TEST_WORK/diagnostic.calls"; then
+      echo 'FAIL: restoration diagnostic caused a mutation' >&2; exit 1
+    fi
+    case $predicate in
+      root) cp "$(state_dir)/root.before" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/root" ;;
+      references) cp "$TEST_WORK/refs.before" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs" ;;
+      status) echo Enabled > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/enabled" ;;
+      owned-empty) rm "$MACOS_TICKET_TRANSPORT_TEST_ROOT/rules" ;;
+      anchors) printf '900.service\n' > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/anchors" ;;
+    esac
+    helper cleanup
+  done
+  mv "$TEST_WORK/load.saved" "$(state_dir)/load-attempted"
+done
+reset_fixture; helper setup
+MOCK_KEEP_EMPTY_ANCHOR=true refuse cleanup
+diagnostic cleanup anchors
+shape_diagnostic 'ticket-transport: phase=cleanup shape=anchors available=true lines=2 owned-leaf=1 owned-qualified=0 remaining-before=true'
+[[ ! -f $(state_dir)/cleaned && ! -s $MACOS_TICKET_TRANSPORT_TEST_ROOT/rules ]]
+helper cleanup
+printf 'PASS: restoration diagnostics preserve strict sibling and empty-child refusal\n'
+closed_output() {
+  closed_status=0
+  bash "$ROOT/scripts/macos-ticket-transport.sh" "$@" 1>&- 2> "$TEST_WORK/closed-output.err" || closed_status=$?
+  if grep -Eq '987654321123456789|111222333444555666|mock-secret|Process Name|000[.]takedown-|900[.]service' "$TEST_WORK/closed-output.err"; then
+    echo 'FAIL: private PF data escaped through a failed diagnostic write' >&2; exit 1
+  fi
+}
+reset_fixture; helper setup
+calls=$(wc -l < "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls")
+helper check
+tail -n "+$((calls + 1))" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls" > "$TEST_WORK/writable-check.calls"
+calls=$(wc -l < "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls")
+closed_output check
+if ! cmp -s "$(state_dir)/rule.now" "$(state_dir)/rule.expected"; then
+  echo 'FAIL: diagnostic output error contaminated private rule readback files' >&2; exit 1
+fi
+tail -n "+$((calls + 1))" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls" > "$TEST_WORK/closed-check.calls"
+if ! cmp -s "$TEST_WORK/writable-check.calls" "$TEST_WORK/closed-check.calls"; then
+  echo 'FAIL: diagnostic output error changed successful PF readback sequence' >&2; exit 1
+fi
+calls=$(wc -l < "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls")
+MOCK_BAD_READBACK=true refuse check
+tail -n "+$((calls + 1))" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls" > "$TEST_WORK/refused-check.calls"
+calls=$(wc -l < "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls")
+MOCK_BAD_READBACK=true closed_output check
+[[ $closed_status != 0 && ! -f $(state_dir)/cleaned ]]
+tail -n "+$((calls + 1))" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls" > "$TEST_WORK/closed-refused.calls"
+if ! cmp -s "$TEST_WORK/refused-check.calls" "$TEST_WORK/closed-refused.calls"; then
+  echo 'FAIL: diagnostic output error changed failed PF predicate ordering' >&2; exit 1
+fi
+closed_output cleanup
+# The pre-existing final success-message write may still fail, but successful
+# predicates must complete every preservation check and commit the journal.
+[[ -f $(state_dir)/cleaned ]] || { echo 'FAIL: diagnostic output error skipped cleanup journal' >&2; exit 1; }
+preserved Enabled
+helper cleanup
+printf 'PASS: diagnostic output errors preserve readback ordering, refusal and cleanup journal\n'
+case ${1:-} in
+  --readback-diagnostics) exit 0 ;;
+  '') ;;
+  *) echo 'unsupported test selection' >&2; exit 1 ;;
+esac
 reset_fixture
 # These refusals must happen before even a read-only PF call.
 cp "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs" "$TEST_WORK/refs.before"
