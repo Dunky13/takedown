@@ -48,7 +48,13 @@ private_mode() {
   fi
 }
 # All PF stdout/stderr, including enable-reference tokens, stays private.
-capture() { pf "$@" > "$state/readback" 2> "$state/pf-error"; }
+capture() {
+  local capture_status=0
+  readback_capture_ok=false
+  pf "$@" > "$state/readback" 2> "$state/pf-error" || capture_status=$?
+  [[ $capture_status != 0 ]] || readback_capture_ok=true
+  return "$capture_status"
+}
 references() {
   capture -s References || return 1
   # Keep PID/name/token identities. The human-readable timestamp/age column is
@@ -127,11 +133,67 @@ anchors_owned() {
   awk -v own="${anchor#com.apple/}" '$0==own {count++; next} {print} END {if(count!=1) exit 1}' \
     "$state/anchors.now" > "$state/anchors.other" && cmp -s "$state/anchors.before" "$state/anchors.other"
 }
+# Diagnose only the first failing predicate, preserving evaluation order and
+# return status. Never print command output, PF identities, or guessed formats.
+readback_shape() {
+  local phase=$1 predicate=$2 lines digest counts leaf qualified remaining=false
+  case $predicate in rule|root|anchors) ;; *) return 0 ;; esac
+  if [[ ${readback_capture_ok:-false} != true || ! -f $state/readback ||
+        -L $state/readback || ! -O $state/readback ]]; then
+    printf 'ticket-transport: phase=%s shape=%s available=false\n' "$phase" "$predicate"
+    return 0
+  fi
+  if [[ $predicate == anchors ]]; then
+    counts=$(awk -v leaf="${anchor#com.apple/}" -v qualified="$anchor" '
+      {sub(/^[[:space:]]*/, ""); if ($0==leaf) relative++; if ($0==qualified) full++}
+      END {printf "%d %d %d\n", NR, relative+0, full+0}
+    ' "$state/readback" 2>/dev/null) || return 1
+    read -r lines leaf qualified <<< "$counts"
+    [[ $lines =~ ^[0-9]+$ && $leaf =~ ^[0-9]+$ && $qualified =~ ^[0-9]+$ ]] || return 1
+    # Classification only: removing either exact owned spelling here does not
+    # change the strict inventory comparison used by the acceptance predicate.
+    if awk -v leaf="${anchor#com.apple/}" -v qualified="$anchor" '
+      {sub(/^[[:space:]]*/, ""); if ($0!=leaf && $0!=qualified) print}
+    ' "$state/readback" 2>/dev/null | sort | cmp -s "$state/anchors.before" -; then
+      remaining=true
+    fi
+    printf 'ticket-transport: phase=%s shape=anchors available=true lines=%s owned-leaf=%s owned-qualified=%s remaining-before=%s\n' \
+      "$phase" "$lines" "$leaf" "$qualified" "$remaining"
+  else
+    lines=$(awk 'END {print NR+0}' "$state/readback" 2>/dev/null) || return 1
+    digest=$(hash "$state/readback" 2>/dev/null) || return 1
+    [[ $lines =~ ^[0-9]+$ && $digest =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf 'ticket-transport: phase=%s shape=%s available=true lines=%s sha256=%s\n' "$phase" "$predicate" "$lines" "$digest"
+  fi
+}
+readback_gate() {
+  local phase=$1 predicate=$2 predicate_status=0
+  shift 2
+  case $phase in setup-load|active|cleanup|post-cleanup) ;; *) return 1 ;; esac
+  case $predicate in rule|root|anchors|references|status|owned-empty|token) ;; *) return 1 ;; esac
+  readback_capture_ok=false
+  "$@" || predicate_status=$?
+  if [[ $predicate_status == 0 ]]; then
+    # Bash 3.2 can retain a failed builtin write and flush it during a later
+    # private-file redirection. Keep diagnostic stdio state out of the caller.
+    (printf 'ticket-transport: phase=%s %s=true\n' "$phase" "$predicate") || true
+  else
+    (printf 'ticket-transport: phase=%s %s=false\n' "$phase" "$predicate" >&2) || true
+    (readback_shape "$phase" "$predicate") || true
+  fi
+  return "$predicate_status"
+}
+references_restored() { references && cmp -s "$state/refs.before" "$state/refs.now"; }
+status_restored() { status_read && [[ $enabled == "$before_enabled" ]]; }
+status_enabled() { status_read && [[ $enabled == Enabled ]]; }
+owned_empty() { capture -a "$anchor" -s rules && [[ ! -s $state/readback ]]; }
+anchors_restored() { anchors_read && cmp -s "$state/anchors.before" "$state/anchors.now"; }
 restored() {
-  root_unchanged && references && cmp -s "$state/refs.before" "$state/refs.now" &&
-    status_read && [[ $enabled == "$before_enabled" ]] &&
-    capture -a "$anchor" -s rules && [[ ! -s $state/readback ]] &&
-    anchors_read && cmp -s "$state/anchors.before" "$state/anchors.now"
+  readback_gate "$1" root root_unchanged &&
+    readback_gate "$1" references references_restored &&
+    readback_gate "$1" status status_restored &&
+    readback_gate "$1" owned-empty owned_empty &&
+    readback_gate "$1" anchors anchors_restored
 }
 owned_group_live() {
   # Zombies cannot execute or checkpoint. Unknown process readback is treated
@@ -147,7 +209,7 @@ cleanup() {
     ! owned_group_live "$group" || fail 'cancelled command still active; transport teardown withheld'
   fi
   if [[ -f $state/cleaned ]]; then
-    restored || fail 'post-cleanup preservation readback failed'
+    restored post-cleanup || fail 'post-cleanup preservation readback failed'
     printf 'ticket-transport: cleanup verified\n'
     return
   fi
@@ -173,15 +235,16 @@ cleanup() {
     fi
     : > "$state/released"
   fi
-  restored || fail 'PF preservation readback failed'
+  restored cleanup || fail 'PF preservation readback failed'
   : > "$state/cleaned"
   printf 'ticket-transport: cleanup verified\n'
 }
 check() {
   load_state
   [[ -f $state/load-attempted && -f $state/enable-attempted && ! -e $state/released && ! -e $state/cleaned ]] || fail 'transport guard is not active'
-  if ! owned_token || ! root_unchanged || ! rule_readback || ! anchors_owned ||
-     ! references_owned || ! status_read || [[ $enabled != Enabled ]]; then
+  if ! readback_gate active token owned_token || ! readback_gate active root root_unchanged ||
+     ! readback_gate active rule rule_readback || ! readback_gate active anchors anchors_owned ||
+     ! readback_gate active references references_owned || ! readback_gate active status status_enabled; then
     fail 'active transport readback failed'
   fi
   printf 'ticket-transport: active readback verified\n'
@@ -281,7 +344,8 @@ case $mode in
     pf -a "$anchor" -n -f "$state/rule.input" > "$state/parse-output" 2>&1 || fail 'owned rule syntax unsupported'
     : > "$state/load-attempted"
     pf -a "$anchor" -f "$state/rule.input" > "$state/load-output" 2>&1 || fail 'owned rule load failed'
-    if ! rule_readback || ! root_unchanged || ! anchors_owned; then fail 'owned rule load readback failed'; fi
+    if ! readback_gate setup-load rule rule_readback || ! readback_gate setup-load root root_unchanged ||
+       ! readback_gate setup-load anchors anchors_owned; then fail 'owned rule load readback failed'; fi
     : > "$state/enable-attempted"
     pf -E > "$state/enable-output" 2>&1 || fail 'owned enable reference acquisition failed'
     check

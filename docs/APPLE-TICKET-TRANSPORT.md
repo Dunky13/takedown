@@ -99,6 +99,42 @@ bound custody fails closed; no token is inferred from a reference-list delta.
 Concurrent external PF changes cause a failed preservation check, not an attempt
 to overwrite or release another owner's state.
 
+Readback gates emit only fixed phase and predicate booleans, for example
+`ticket-transport: phase=setup-load anchors=false`. Phases are `setup-load`,
+`active`, `cleanup`, and `post-cleanup`; predicates are `rule`, `root`, `anchors`,
+`references`, `status`, `owned-empty`, and `token`. Evaluation still stops at the
+first failed predicate and retains the aggregate failure message. A predicate
+not printed after a failure was not evaluated. These facts distinguish the
+failed gate without printing raw PF output, anchor names, reference identities,
+tokens, process names, or network diagnostics. Private readbacks stay private.
+
+Failed rule, root and anchor gates also emit a fixed `shape` record, using only
+the successful capture from that predicate. Failed captures report
+`available=false`, so partial or stale output cannot be presented as fresh
+evidence. Rule/root records contain only line counts and a SHA-256 digest.
+Anchor records contain line counts, exact owned-leaf and owned-qualified match
+counts, and whether the remaining sorted inventory matches the original bytes.
+These classifications do not alter the strict acceptance comparison or permit
+either spelling. They distinguish an owned-name representation or lingering
+owned child from a foreign inventory change without disclosing anchor names.
+No diagnostic performs another PF command or changes cleanup decisions.
+Diagnostic writes are best effort and preserve the underlying predicate status,
+including when stdout is closed. They cannot skip later successful preservation
+checks or the cleanup journal. The pre-existing final success-message write can
+still fail the overall command if its output is unavailable.
+Each diagnostic write uses a child stdio context: Bash 3.2 can otherwise retain
+a failed builtin write and flush its buffered text into a later private-file
+redirection. Diagnostic output cannot contaminate subsequent rule comparisons.
+
+The aggregate load failure alone cannot distinguish rule canonicalization,
+root drift, or anchor inventory mismatch. The aggregate preservation failure
+alone cannot distinguish root, references, enabled state, owned rules, or
+anchor inventory. Local parser output and synthetic inventory models do not
+establish the hosted macOS readback format or the lifetime of an empty child.
+Do not normalize additional formats or permit a lingering owned child based
+on these aggregate errors. Such a change needs platform evidence that also
+distinguishes the exact empty owned child from foreign or newly added anchors.
+
 Cleanup failure fails the operation/job even when native verification succeeded.
 The native verifier calls the same cleanup helper before it writes success or a
 verified checkpoint. The outer guard and workflow then repeat its idempotent
@@ -124,6 +160,18 @@ Run only the synthetic suite locally:
 ```sh
 bash scripts/test-macos-ticket-transport.sh
 ```
+
+For the targeted diagnostic regression scenarios only:
+
+```sh
+bash scripts/test-macos-ticket-transport.sh --readback-diagnostics
+```
+
+These scenarios inject each failed readback predicate at the real helper
+lifecycle seam, including unsupported qualified anchor output and a retained
+empty child. Both hypotheses remain refused; they are not captured native
+behavior or proof of a hosted root cause. The full suite retains its original
+negative, cancellation, credential, custody, and workflow assertions.
 
 It creates an owned temporary model directory with an explicit mock marker and
 PF driver, and executes the real helper lifecycle against that model. It also
