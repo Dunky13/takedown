@@ -219,11 +219,13 @@ reset_fixture; helper setup
 refuse run bash -c 'kill -TERM "$PPID"; exit 0'
 preserved Enabled
 printf 'PASS: failed and interrupted guarded commands clean up\n'
-reset_fixture; helper setup
-ruby - "$ROOT" "$TEST_WORK" "$(state_dir)" <<'RUBY'
+for cancel_phase in startup armed native-failure; do
+  reset_fixture; helper setup
+  ruby - "$ROOT" "$TEST_WORK" "$(state_dir)" "$cancel_phase" <<'RUBY'
 require 'timeout'
-root, work, state = ARGV
-fixture = File.join(work, 'nested-cancellation')
+root, work, state, phase = ARGV
+raise 'unknown cancellation phase' unless %w[startup armed native-failure].include?(phase)
+fixture = File.join(work, "nested-cancellation-#{phase}")
 Dir.mkdir(fixture)
 File.write(File.join(fixture, 'leaf.sh'), <<~'SH')
   #!/usr/bin/env bash
@@ -231,7 +233,25 @@ File.write(File.join(fixture, 'leaf.sh'), <<~'SH')
   echo "$$" > "$NESTED_FIXTURE/leaf.pid"
   sleep 30 & native=$!
   echo "$native" > "$NESTED_FIXTURE/native.pid"
-  trap 'kill -TERM "$native" 2>/dev/null || true; wait "$native" 2>/dev/null || true; if [[ -f $MACOS_TICKET_TRANSPORT_TEST_ROOT/token && -s $MACOS_TICKET_TRANSPORT_TEST_ROOT/rules ]]; then echo ordered > "$NESTED_FIXTURE/cleanup"; fi; exit 143' TERM
+  # PID files alone do not establish that the cleanup handler is installed.
+  : > "$NESTED_FIXTURE/startup-ready"
+  while [[ ! -f $NESTED_FIXTURE/allow-trap ]]; do sleep 0.01; done
+  cleanup_leaf() {
+    status=$?
+    trap - EXIT INT TERM
+    kill -TERM "$native" 2>/dev/null || true
+    wait "$native" 2>/dev/null || true
+    if [[ -f $MACOS_TICKET_TRANSPORT_TEST_ROOT/token && -s $MACOS_TICKET_TRANSPORT_TEST_ROOT/rules ]]; then
+      echo ordered > "$NESTED_FIXTURE/cleanup"
+    fi
+    exit "$status"
+  }
+  # Child failure can make wait exit under -e before the leaf receives TERM.
+  # Release wrappers clean up on EXIT as well as handled signals.
+  trap cleanup_leaf EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  : > "$NESTED_FIXTURE/armed"
   wait "$native"
   echo invalid > "$NESTED_FIXTURE/late-success"
 SH
@@ -243,16 +263,31 @@ guard = nil
 live = ->(pid) { !IO.popen(['ps', '-o', 'stat=', '-p', pid.to_s], &:read).strip.match?(/\A(?:Z.*)?\z/) }
 begin
   guard = Process.spawn({'NESTED_FIXTURE'=>fixture}, 'bash', File.join(root, 'scripts/macos-ticket-transport.sh'), 'run', 'bash', File.join(fixture, 'wrapper.sh'), out: File.join(fixture, 'guard.log'), err: [:child, :out])
-  Timeout.timeout(10) { sleep 0.02 until File.exist?(File.join(fixture, 'native.pid')) }
-  Process.kill('TERM', guard)
+  # Publish complete PID custody before testing startup cancellation. The armed
+  # case additionally waits for the real TERM handler, rather than racing it.
+  Timeout.timeout(10) { sleep 0.02 until File.exist?(File.join(fixture, 'startup-ready')) }
+  if phase != 'startup'
+    File.write(File.join(fixture, 'allow-trap'), '')
+    Timeout.timeout(10) { sleep 0.02 until File.exist?(File.join(fixture, 'armed')) }
+  end
+  if phase == 'native-failure'
+    Process.kill('TERM', Integer(File.read(File.join(fixture, 'native.pid'))))
+  else
+    Process.kill('TERM', guard)
+  end
   _, status = Timeout.timeout(10) { Process.wait2(guard) }
   raise 'guard cancellation did not fail' unless status.exitstatus == 143
-  raise 'nested cleanup did not complete before PF teardown' unless File.read(File.join(fixture, 'cleanup')) == "ordered\n"
+  if phase != 'startup'
+    raise 'nested cleanup did not complete before PF teardown' unless File.read(File.join(fixture, 'cleanup')) == "ordered\n"
+  else
+    raise 'startup cancellation claimed an uninstalled cleanup handler' if File.exist?(File.join(fixture, 'cleanup'))
+  end
   %w[leaf native].each do |kind|
     raise 'nested command survived guard cleanup' if live.call(Integer(File.read(File.join(fixture, kind + '.pid'))))
   end
   raise 'cancelled command wrote late success' if File.exist?(File.join(fixture, 'late-success'))
   raise 'PF cleanup did not complete' unless File.exist?(File.join(state, 'cleaned'))
+  puts "PASS: #{phase} cancellation drains owned descendants before PF teardown"
 ensure
   %w[native leaf].each do |kind|
     file = File.join(fixture, kind + '.pid')
@@ -262,7 +297,8 @@ ensure
   begin Process.wait(guard) if guard; rescue Errno::ECHILD; end
 end
 RUBY
-preserved Enabled
+  preserved Enabled
+done
 printf 'PASS: nested cancellation finishes owned native cleanup before PF teardown and cannot write late success\n'
 for failure in flush release; do
   reset_fixture; helper setup
