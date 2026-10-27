@@ -151,6 +151,7 @@ jobs:
             ${{ runner.temp }}/notary-evidence/input.json
             ${{ runner.temp }}/notary-evidence/checkpoint.json
             ${{ runner.temp }}/notary-evidence/acceptance.json
+            ${{ runner.temp }}/notary-evidence/acceptance-state.json
             ${{ runner.temp }}/notary-evidence/*/receipt.json
             ${{ runner.temp }}/notary-evidence/*/blocked-receipt-*.json
             ${{ runner.temp }}/notary-evidence/*/apple-log.json
@@ -246,7 +247,8 @@ jobs:
           for arch in arm64 amd64; do
             env NOTARY_ARCH="$arch" GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash scripts/apple-release-state.sh restore "$RUNNER_TEMP/evidence-$arch"
             if [[ ! -f $RUNNER_TEMP/evidence-$arch/acceptance.json || ! -f $RUNNER_TEMP/evidence-$arch/final/SHA256SUMS ]] ||
-              ! bash scripts/apple-stages-verified.sh "$RUNNER_TEMP/evidence-$arch"; then ready=false; fi
+              ! bash scripts/apple-stages-verified.sh "$RUNNER_TEMP/evidence-$arch" ||
+              ! bash scripts/apple-acceptance-ready.sh "$RUNNER_TEMP/evidence-$arch"; then ready=false; fi
           done
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
           echo "Both architecture final checkpoints ready: $ready" >> "$GITHUB_STEP_SUMMARY"

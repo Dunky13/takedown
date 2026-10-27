@@ -162,6 +162,9 @@ reset_fixture() {
       --arg dmg "$(hash "$WORK/artifacts/macos-$arch-release.dmg/takedown-$version-macos-$arch-release.dmg")" \
       '{source_commit:$source,version:$version,architecture:$arch,ci_run_id:"12345",ci_run_attempt:"2",zip_sha256:$zip,dmg_sha256:$dmg}' > "$evidence/acceptance.json"
     jq '. + {credential_free_runner:true,verification_run_id:"23456",verification_run_attempt:"1"}' "$evidence/acceptance.json" > "$evidence/fresh-acceptance.json"
+    jq --arg input "$(hash "$evidence/input.json")" --arg app "$(hash "$evidence/app/receipt.json")" --arg dmg "$(hash "$evidence/dmg/receipt.json")" \
+      '. + {schema:1,state:"verified",attempts:0,failure_class:"",team_id:"ABCDEFGHIJ",input_sha256:$input,app_receipt_sha256:$app,dmg_receipt_sha256:$dmg}' \
+      "$evidence/acceptance.json" > "$evidence/acceptance-state.json"
   done
 }
 publish() { bash scripts/publish-release.sh "$WORK/plan" "$WORK/artifacts" > "$WORK/log" 2>&1; }
@@ -401,6 +404,17 @@ for arch in arm64 amd64; do
     'dmg/receipt.json|.failure_exit="68"' \
     'dmg/receipt.json|.failure_class="unclassified"' \
     'dmg/apple-log.json|.jobId="bad"' \
+    'acceptance-state.json|.state="pending"' \
+    'acceptance-state.json|.state="blocked"|.failure_class="cloudkit-transport"' \
+    'acceptance-state.json|.attempts=4' \
+    'acceptance-state.json|.attempts=-1' \
+    'acceptance-state.json|.failure_class="unclassified"' \
+    'acceptance-state.json|.source_commit="bad"' \
+    'acceptance-state.json|.zip_sha256="bad"' \
+    'acceptance-state.json|.dmg_sha256="bad"' \
+    'acceptance-state.json|.input_sha256="bad"' \
+    'acceptance-state.json|.app_receipt_sha256="bad"' \
+    'acceptance-state.json|.dmg_receipt_sha256="bad"' \
     'acceptance.json|.source_commit="bad"' \
     'acceptance.json|.ci_run_id="999"' \
     'acceptance.json|.ci_run_attempt="3"' \

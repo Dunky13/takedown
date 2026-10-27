@@ -108,6 +108,7 @@ for arch in arm64 amd64; do
     [[ -f $evidence/$path && ! -L $evidence/$path ]] || fail "missing macOS evidence: $arch/$path"
   done
   [[ -z $(find "$evidence" -type l -print) ]] || fail 'symlink in macOS evidence'
+  macos_acceptance_ready "$evidence" || fail "final macOS acceptance incomplete or mismatched: $arch"
   runner_arch=ARM64
   [[ $arch != amd64 ]] || runner_arch=X64
   artifact_name="unsigned-native-macOS-$runner_arch-$sha"

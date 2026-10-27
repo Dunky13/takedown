@@ -30,9 +30,11 @@ parent_sha=$(shasum -a 256 "$TEST_WORK/parent.json" | awk '{print $1}')
 cp "$TEST_WORK/parent.json" "$TEST_WORK/evidence/app/blocked-receipt-$parent_sha.json"
 state() { bash "$ROOT/scripts/apple-release-state.sh" "$@" > "$TEST_WORK/log" 2>&1; }
 reject() { if state "$@"; then echo 'expected custody failure' >&2; exit 1; fi; }
+printf '{"synthetic":"archive-bound acceptance pending counter"}\n' > "$TEST_WORK/evidence/acceptance-state.json"
 state save "$TEST_WORK/evidence"
 state restore "$TEST_WORK/restored"
 cmp "$TEST_WORK/evidence/input.json" "$TEST_WORK/restored/input.json"
+cmp "$TEST_WORK/evidence/acceptance-state.json" "$TEST_WORK/restored/acceptance-state.json"
 cmp "$TEST_WORK/parent.json" "$TEST_WORK/restored/app/blocked-receipt-$parent_sha.json"
 printf '{"synthetic":true,"stage":"prepared"}\n' > "$TEST_WORK/evidence/input.json"
 state save "$TEST_WORK/evidence"

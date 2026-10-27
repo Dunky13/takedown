@@ -170,6 +170,14 @@ Only a diagnosed CloudKit connection failure with stapler exit 68 can continue
 automatically; a persistent counter permits at most three ticket attempts per
 stage. Other ticket failures stop rather than retry generically.
 
+Final native acceptance also checkpoints a receipt bound to the original input,
+verified stage receipts and exact final ZIP/DMG hashes. An observed native CloudKit
+connection-loss diagnostic can leave acceptance pending, with a persistent
+three-attempt recovery ceiling shared by signing and fresh acceptance runners.
+Unknown or contradictory diagnostics, exhausted budgets and cleanup failures
+block publication. Every retry preserves the archives and repeats the complete
+native checks; pending state invalidates previous acceptance receipts.
+
 `APPLE_QUALIFY_CONTINUATION=true` is an optional repository variable for hosted
 recovery qualification. A newly captured, durably retained UUID yields before
 waiting; continuation must use that UUID. This does not simulate acceptance or
