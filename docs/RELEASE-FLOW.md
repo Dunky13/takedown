@@ -247,6 +247,16 @@ is verified read-only and succeeds idempotently. A lost response after publicati
 can therefore be reconciled without rewriting the release. A durable completion
 marker closes candidate custody only after successful promotion.
 
+The publisher discovers an existing version once, then binds all reads and writes
+to its numeric release ID. New drafts use the REST creation response and a direct
+GET by ID, rather than waiting for release-list visibility. Upload receipts must
+match the asset name, size and uploaded state; each acknowledged asset ID is
+downloaded and compared before the complete inventory check. Publication uses a
+PATCH to the same release ID and verifies both its response and a direct GET.
+An uncertain write stops that invocation; a later run reconciles the existing
+draft or published version without recreating it. See the
+[publication repair handoff](RELEASE-PUBLICATION-REPAIR.md).
+
 ## Evidence and operational recovery
 
 The private candidate draft is the recovery entry point. Actions also retains safe
