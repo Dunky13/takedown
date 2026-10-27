@@ -19,22 +19,38 @@ BASE="takedown-$RELEASE_VERSION-macos-$NOTARY_ARCH-release"
 if [[ -n ${NOTARY_CHECKPOINT_HOOK:-} ]]; then
   [[ $NOTARY_CHECKPOINT_HOOK == /* && -f $NOTARY_CHECKPOINT_HOOK && ! -L $NOTARY_CHECKPOINT_HOOK ]] || fail 'invalid acceptance checkpoint hook'
 fi
+if [[ -n ${NOTARY_ACCEPTANCE_CLEANUP_HOOK:-} ]]; then
+  [[ $NOTARY_ACCEPTANCE_CLEANUP_HOOK == /* && -f $NOTARY_ACCEPTANCE_CLEANUP_HOOK && ! -L $NOTARY_ACCEPTANCE_CLEANUP_HOOK ]] || fail 'invalid acceptance cleanup hook'
+fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/takedown-acceptance.XXXXXX")
 MOUNTED=false
 # shellcheck source=scripts/macos-ticket-policy.sh
 source "$ROOT/scripts/macos-ticket-policy.sh"
 STATE_ACTIVE=false CHECKPOINT_FAILED=false RESERVED=false
 ATTEMPTS=0 FAILURE_CLASS=''
+EXCEPTION_PARENT=''
+not_cancelled() {
+  if [[ -n ${NOTARY_ACCEPTANCE_CANCEL_FILE:-} ]]; then
+    [[ $NOTARY_ACCEPTANCE_CANCEL_FILE == /* && ! -e $NOTARY_ACCEPTANCE_CANCEL_FILE && ! -L $NOTARY_ACCEPTANCE_CANCEL_FILE ]] || {
+      CHECKPOINT_FAILED=true
+      rm -f "$NOTARY_EVIDENCE_DIR/acceptance.json" "$NOTARY_EVIDENCE_DIR/fresh-acceptance-$NOTARY_ARCH.json"
+      fail 'guarded acceptance cancelled; success and checkpoint withheld'
+    }
+  fi
+}
 checkpoint() {
   local status=0
+  not_cancelled
   if [[ -n ${NOTARY_CHECKPOINT_HOOK:-} ]]; then
     bash "$NOTARY_CHECKPOINT_HOOK" "$NOTARY_EVIDENCE_DIR" >/dev/null 2>&1 || status=$?
     [[ $status == 0 ]] || { CHECKPOINT_FAILED=true; rm -f "$NOTARY_EVIDENCE_DIR/acceptance.json"; fail 'acceptance checkpoint failed; private output withheld'; }
+    not_cancelled
   fi
 }
 acceptance_state() {
   jq --arg state "$1" --argjson attempts "$ATTEMPTS" --arg failure "$FAILURE_CLASS" \
-    --argjson binding "$BINDING_JSON" -n '$binding + {schema:1,state:$state,attempts:$attempts,failure_class:$failure}' > "$NOTARY_EVIDENCE_DIR/.acceptance-state.tmp" || return 1
+    --arg parent "$EXCEPTION_PARENT" --argjson binding "$BINDING_JSON" -n '$binding + {schema:1,state:$state,attempts:$attempts,failure_class:$failure} +
+      (if $parent == "" then {} else {acceptance_exception_parent_sha256:$parent} end)' > "$NOTARY_EVIDENCE_DIR/.acceptance-state.tmp" || return 1
   mv "$NOTARY_EVIDENCE_DIR/.acceptance-state.tmp" "$NOTARY_EVIDENCE_DIR/acceptance-state.json" || return 1
   checkpoint
 }
@@ -57,6 +73,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+if [[ -n ${NOTARY_EVIDENCE_DIR:-} ]]; then
+  macos_acceptance_custody "$NOTARY_EVIDENCE_DIR" || fail 'acceptance custody is incomplete or invalid; no mutation permitted'
+fi
 for extension in zip dmg; do
   [[ -f $PACKAGES/$BASE.$extension && ! -L $PACKAGES/$BASE.$extension ]] || fail 'signed asset missing'
 done
@@ -69,6 +88,7 @@ hash() { shasum -a 256 "$1" | awk '{print $1}'; }
 ZIP_SHA=$(hash "$PACKAGES/$BASE.zip")
 DMG_SHA=$(hash "$PACKAGES/$BASE.dmg")
 if [[ -n ${NOTARY_EVIDENCE_DIR:-} ]]; then
+  not_cancelled
   [[ -d $NOTARY_EVIDENCE_DIR && ! -L $NOTARY_EVIDENCE_DIR ]] || fail 'invalid acceptance evidence directory'
   for name in input.json app/receipt.json dmg/receipt.json; do
     [[ -f $NOTARY_EVIDENCE_DIR/$name && ! -L $NOTARY_EVIDENCE_DIR/$name ]] || fail 'missing acceptance binding'
@@ -84,6 +104,11 @@ if [[ -n ${NOTARY_EVIDENCE_DIR:-} ]]; then
       team_id:$team,zip_sha256:$zip,dmg_sha256:$dmg,input_sha256:$input,
       app_receipt_sha256:$app_receipt,dmg_receipt_sha256:$dmg_receipt}' > "$WORK/binding.json"
   BINDING_JSON=$(cat "$WORK/binding.json")
+  if [[ ! -e $NOTARY_EVIDENCE_DIR/acceptance-state.json && ! -L $NOTARY_EVIDENCE_DIR/acceptance-state.json &&
+      ( -e $NOTARY_EVIDENCE_DIR/blocked-acceptance-27b7a083cc181ed6def7479ec99b25479d7b11d9c3de36bbbd9facfbacfc60fe.json ||
+        -L $NOTARY_EVIDENCE_DIR/blocked-acceptance-27b7a083cc181ed6def7479ec99b25479d7b11d9c3de36bbbd9facfbacfc60fe.json ) ]]; then
+    fail 'acceptance state missing beside immutable exception parent'
+  fi
   if [[ -e $NOTARY_EVIDENCE_DIR/acceptance-state.json || -L $NOTARY_EVIDENCE_DIR/acceptance-state.json ]]; then
     [[ -f $NOTARY_EVIDENCE_DIR/acceptance-state.json && ! -L $NOTARY_EVIDENCE_DIR/acceptance-state.json ]] || fail 'invalid acceptance state file'
     macos_acceptance_state_valid "$NOTARY_EVIDENCE_DIR/acceptance-state.json" || fail 'malformed acceptance state'
@@ -91,8 +116,38 @@ if [[ -n ${NOTARY_EVIDENCE_DIR:-} ]]; then
       to_entries | all(.[]; $s[.key] == .value)' "$NOTARY_EVIDENCE_DIR/acceptance-state.json" >/dev/null || fail 'acceptance state binding mismatch'
     ATTEMPTS=$(jq -r .attempts "$NOTARY_EVIDENCE_DIR/acceptance-state.json")
     prior=$(jq -r .state "$NOTARY_EVIDENCE_DIR/acceptance-state.json")
-    [[ $prior != blocked ]] || fail 'acceptance is terminal; no automatic retry'
-    if [[ $prior == pending ]]; then
+    macos_acceptance_exception_audit "$NOTARY_EVIDENCE_DIR" || fail 'invalid immutable acceptance parent'
+    EXCEPTION_PARENT=$(jq -r '.acceptance_exception_parent_sha256 // ""' "$NOTARY_EVIDENCE_DIR/acceptance-state.json")
+    if [[ -n $EXCEPTION_PARENT ]]; then
+      # Even verified4 is audit-only on later invocations. No second native
+      # qualification may be bought by repinning an exception child.
+      fail 'acceptance exception already spent; no additional native qualification'
+    elif [[ $prior == blocked ]]; then
+      [[ ${NOTARY_ACCEPTANCE_FRESH:-false} == true && -n ${NOTARY_CHECKPOINT_HOOK:-} ]] || fail 'acceptance is terminal; fresh-only approval required'
+      [[ ${NOTARY_ACCEPTANCE_VERIFICATION_RUN_ID:-} =~ ^[1-9][0-9]*$ &&
+         ${NOTARY_ACCEPTANCE_VERIFICATION_RUN_ATTEMPT:-} =~ ^[1-9][0-9]*$ ]] || fail 'fresh verification workflow identity missing'
+      [[ ${NOTARY_ACCEPTANCE_VERIFICATION_WORKFLOW_SHA:-} =~ ^[0-9a-f]{40}$ &&
+         $NOTARY_ACCEPTANCE_VERIFICATION_WORKFLOW_SHA == "${RELEASE_AUTOMATION_SHA:-}" &&
+         $NOTARY_ACCEPTANCE_VERIFICATION_WORKFLOW_SHA == "${RELEASE_WORKFLOW_SHA:-}" &&
+         $NOTARY_ACCEPTANCE_VERIFICATION_WORKFLOW_SHA == "${GITHUB_SHA:-}" ]] || fail 'qualified verification automation identity missing'
+      for credential in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD MACOS_SIGN_IDENTITY APPLE_API_KEY_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+        [[ -z ${!credential:-} ]] || fail 'acceptance exception requires a credential-free runner'
+      done
+      macos_acceptance_exception_eligible "$NOTARY_EVIDENCE_DIR" || fail 'acceptance exception approval or custody invalid'
+      [[ -n ${NOTARY_ACCEPTANCE_PEER_DIR:-} ]] || fail 'counterpart custody missing'
+      [[ -n ${NOTARY_ACCEPTANCE_PEER_CLEANUP_DIR:-} && $NOTARY_ACCEPTANCE_PEER_DIR == "$NOTARY_ACCEPTANCE_PEER_CLEANUP_DIR/evidence" &&
+         ${NOTARY_ACCEPTANCE_PEER_CLEANUP_DIR##*/} == takedown-counterpart.* &&
+         -d $NOTARY_ACCEPTANCE_PEER_CLEANUP_DIR && ! -L $NOTARY_ACCEPTANCE_PEER_CLEANUP_DIR ]] || fail 'counterpart cleanup ownership missing'
+      macos_acceptance_exception_peer "$NOTARY_ACCEPTANCE_PEER_DIR" "$NOTARY_EVIDENCE_DIR" || fail 'counterpart custody or identity invalid'
+      parent="$NOTARY_EVIDENCE_DIR/blocked-acceptance-$NOTARY_ACCEPTANCE_REQUALIFY_SHA256.json"
+      if [[ ! -e $parent ]]; then cp -p "$NOTARY_EVIDENCE_DIR/acceptance-state.json" "$parent"; fi
+      cmp -s "$parent" "$NOTARY_EVIDENCE_DIR/acceptance-state.json" || fail 'immutable parent changed'
+      # Acknowledge the unchanged blocked3 plus its immutable parent first.
+      rm -f "$NOTARY_EVIDENCE_DIR/acceptance.json" "$NOTARY_EVIDENCE_DIR/fresh-acceptance-$NOTARY_ARCH.json" "$NOTARY_EVIDENCE_DIR/fresh-acceptance-$NOTARY_ARCH.json.pending"
+      checkpoint
+      EXCEPTION_PARENT=$NOTARY_ACCEPTANCE_REQUALIFY_SHA256
+      ATTEMPTS=4 FAILURE_CLASS='' RESERVED=true
+    elif [[ $prior == pending ]]; then
       [[ $ATTEMPTS -lt 3 ]] || { FAILURE_CLASS=unclassified; acceptance_state blocked; fail 'acceptance recovery budget exhausted'; }
       ATTEMPTS=$((ATTEMPTS + 1))
       RESERVED=true
@@ -132,6 +187,8 @@ check_app() {
   codesign --display --verbose=4 "$app" 2> "$WORK/signature"
   grep -qx "TeamIdentifier=$APPLE_TEAM_ID" "$WORK/signature" || fail 'wrong signed team'
   grep -q '^Authority=Developer ID Application: ' "$WORK/signature" || fail 'Developer ID signature missing'
+  grep -Eq '^Timestamp=.+$' "$WORK/signature" || fail 'secure signing timestamp missing'
+  grep -Eq '^CodeDirectory .*flags=.*\(runtime\)' "$WORK/signature" || fail 'hardened runtime missing'
   validate_ticket "$app"
   spctl --assess --type execute --verbose=2 "$app"
 }
@@ -142,6 +199,7 @@ codesign --verify --strict --verbose=2 "$PACKAGES/$BASE.dmg"
 codesign --display --verbose=4 "$PACKAGES/$BASE.dmg" 2> "$WORK/signature"
 grep -qx "TeamIdentifier=$APPLE_TEAM_ID" "$WORK/signature" || fail 'wrong DMG team'
 grep -q '^Authority=Developer ID Application: ' "$WORK/signature" || fail 'DMG Developer ID signature missing'
+grep -Eq '^Timestamp=.+$' "$WORK/signature" || fail 'DMG secure signing timestamp missing'
 validate_ticket "$PACKAGES/$BASE.dmg"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$PACKAGES/$BASE.dmg"
 # Set before attach so cleanup also attempts to detach a partially mounted image.
@@ -156,11 +214,26 @@ hdiutil detach -quiet "$WORK/mount"
 MOUNTED=false
 rm -rf -- "$WORK"
 WORK=''
+if [[ -n $EXCEPTION_PARENT ]]; then
+  rm -rf -- "$NOTARY_ACCEPTANCE_PEER_CLEANUP_DIR" || fail 'owned counterpart cleanup failed'
+fi
+# Optional job-owned transport teardown is part of qualification, before either
+# success receipt or verified state can be written/checkpointed.
+not_cancelled
+if [[ -n ${NOTARY_ACCEPTANCE_CLEANUP_HOOK:-} ]]; then
+  bash "$NOTARY_ACCEPTANCE_CLEANUP_HOOK" cleanup || fail 'acceptance cleanup hook failed'
+fi
+not_cancelled
 if [[ -n ${NOTARY_EVIDENCE_DIR:-} ]]; then
   jq -n --arg version "$RELEASE_VERSION" --arg arch "$NOTARY_ARCH" \
     --arg source "${NOTARY_SOURCE_SHA:?NOTARY_SOURCE_SHA is required}" --arg run "${GITHUB_RUN_ID:?}" --arg attempt "${GITHUB_RUN_ATTEMPT:?}" \
     --arg zip "$ZIP_SHA" --arg dmg "$DMG_SHA" \
-    '{source_commit:$source,ci_run_id:$run,ci_run_attempt:$attempt,version:$version,architecture:$arch,zip_sha256:$zip,dmg_sha256:$dmg,checks:["checksums","Developer ID","stapling","Gatekeeper","copied app metadata and version","native slices","ZIP/DMG executable equality"]}' \
+    --arg parent "$EXCEPTION_PARENT" \
+    --arg verification_run "${NOTARY_ACCEPTANCE_VERIFICATION_RUN_ID:-}" --arg verification_attempt "${NOTARY_ACCEPTANCE_VERIFICATION_RUN_ATTEMPT:-}" \
+    --arg verification_sha "${NOTARY_ACCEPTANCE_VERIFICATION_WORKFLOW_SHA:-}" \
+    '{source_commit:$source,ci_run_id:$run,ci_run_attempt:$attempt,version:$version,architecture:$arch,zip_sha256:$zip,dmg_sha256:$dmg,checks:["checksums","Developer ID","stapling","Gatekeeper","copied app metadata and version","native slices","ZIP/DMG executable equality"]} +
+      (if $parent == "" then {} else {acceptance_attempts:4,acceptance_exception_parent_sha256:$parent,
+        credential_free_runner:true,verification_run_id:$verification_run,verification_run_attempt:$verification_attempt,verification_workflow_sha:$verification_sha} end)' \
     > "$NOTARY_EVIDENCE_DIR/.acceptance.tmp"
   mv "$NOTARY_EVIDENCE_DIR/.acceptance.tmp" "$NOTARY_EVIDENCE_DIR/acceptance.json"
   FAILURE_CLASS=''

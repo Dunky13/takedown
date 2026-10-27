@@ -178,6 +178,26 @@ Unknown or contradictory diagnostics, exhausted budgets and cleanup failures
 block publication. Every retry preserves the archives and repeats the complete
 native checks; pending state invalidates previous acceptance receipts.
 
+Both hosted macOS jobs use an owned temporary PF child anchor and reference to
+prefer TCP for Apple ticket validation. They refuse unsupported PF layouts;
+all native trust checks and verified cleanup remain mandatory. See
+[transport custody and limits](APPLE-TICKET-TRANSPORT.md).
+
+The owner separately authorized one exact ARM fresh qualification for candidate
+425202908's blocked acceptance receipt, advancing spent3 to4 without resetting
+the original counter. `APPLE_REQUALIFY_ACCEPTANCE_SHA256` is a nonsecret approval
+pin, forwarded only to the protected release jobs. Default budgets remain3;
+Intel and other receipts receive no exception. The immutable parent, counterpart
+readiness, native checks, pre-success transport cleanup and receipt gates are
+described in [the exact-parent exception](APPLE-ACCEPTANCE-EXCEPTION.md). A completed
+fresh exception retains its original verification run in durable custody so a
+publication retry can audit that same success without another qualification.
+The exact original fresh job must have completed successfully, and its uploaded
+proof must match the retained native proof bytes. A late verified checkpoint
+from a cancelled or failed job cannot authorize replay. The
+[completion gate](APPLE-FRESH-COMPLETION.md) also checks original automation
+provenance and supports sealed candidate proof retention after Actions expiry.
+
 `APPLE_QUALIFY_CONTINUATION=true` is an optional repository variable for hosted
 recovery qualification. A newly captured, durably retained UUID yields before
 waiting; continuation must use that UUID. This does not simulate acceptance or

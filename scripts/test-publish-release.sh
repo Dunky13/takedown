@@ -18,6 +18,7 @@ cat > "$WORK/mock-bin/gh" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$MOCK_STATE/calls"
+if [[ ${1:-} == api && ${2:-} == --hostname ]]; then exec "$FIXTURE/bin/gh" "$@"; fi
 # Fixture also enforces the no-overwrite contract on every command.
 for arg in "$@"; do [[ $arg != --clobber* ]] || { echo 'overwrite forbidden' >&2; exit 1; }; done
 if [[ $1 == api ]]; then
@@ -224,6 +225,70 @@ publish
 [[ $(jq -r .draft "$MOCK_STATE/release") == false && $(jq length "$MOCK_STATE/assets") == 8 ]]
 echo 'PASS: legacy evidence without final acceptance state retains all original publication gates'
 
+# Exercise the actual publisher with a complete exception receipt and immutable
+# parent. Pin substitutions exist only in a private policy copy for synthetic
+# candidate/run/repository bytes; the shipped policy cannot authorize fixtures.
+mkdir "$WORK/exception-scripts"
+cp scripts/publish-release.sh scripts/release-source.sh "$WORK/exception-scripts/"
+exception_fixture() {
+  reset_fixture manual 0.0.1
+  evidence="$WORK/artifacts/macos-evidence-arm64"
+  mkdir "$evidence/final"
+  for stage in app dmg; do
+    extension=zip; [[ $stage != dmg ]] || extension=dmg
+    file="$WORK/artifacts/macos-arm64-release.$extension/takedown-$version-macos-arm64-release.$extension"
+    cp "$file" "$evidence/final/"
+    verified_file=stapled-app.zip; [[ $stage != dmg ]] || verified_file=stapled.dmg
+    cp "$file" "$evidence/$stage/$verified_file"
+    mutate "$evidence/$stage/receipt.json" ". + {schema:2,team_id:\"ABCDEFGHIJ\",signing_identity:\"Developer ID Application: Marc Went (ABCDEFGHIJ)\",verified_filename:\"$verified_file\",verified_sha256:\"$(hash "$file")\",ticket_attempts:1,validation_attempts:0}"
+  done
+  (cd "$evidence/final" && shasum -a 256 ./*.zip ./*.dmg | sed 's@  \./@  @' > SHA256SUMS)
+  rm -rf "$WORK/artifacts/macos-arm64-release.zip" "$WORK/artifacts/macos-arm64-release.dmg"
+  mutate "$evidence/acceptance-state.json" ".state=\"blocked\" | .attempts=3 | .failure_class=\"cloudkit-transport\" | .app_receipt_sha256=\"$(hash "$evidence/app/receipt.json")\" | .dmg_receipt_sha256=\"$(hash "$evidence/dmg/receipt.json")\""
+  exception_pin=$(hash "$evidence/acceptance-state.json")
+  cp "$evidence/acceptance-state.json" "$evidence/blocked-acceptance-$exception_pin.json"
+  sed -e "s/27b7a083cc181ed6def7479ec99b25479d7b11d9c3de36bbbd9facfbacfc60fe/$exception_pin/g" \
+    -e "s/ef82381d509aac8b5b02da0f784a8176b1c5b9c0/$EXPECTED_SHA/g" \
+    -e 's/40470756538/12345/g' -e 's/\.ci_run_attempt == "1"/.ci_run_attempt == "2"/g' \
+    -e 's@Dunky13/takedown@fixture/takedown@g' scripts/macos-ticket-policy.sh > "$WORK/exception-scripts/macos-ticket-policy.sh"
+  mutate "$evidence/acceptance-state.json" ".state=\"verified\" | .attempts=4 | .failure_class=\"\" | .acceptance_exception_parent_sha256=\"$exception_pin\""
+  for receipt in acceptance.json fresh-acceptance.json; do mutate "$evidence/$receipt" ".acceptance_attempts=4 | .acceptance_exception_parent_sha256=\"$exception_pin\" | .credential_free_runner=true | .verification_run_id=\"23456\" | .verification_run_attempt=\"1\" | .verification_workflow_sha=\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""; done
+  cp "$evidence/acceptance.json" "$evidence/fresh-acceptance.json"
+  sed -e "s/27b7a083cc181ed6def7479ec99b25479d7b11d9c3de36bbbd9facfbacfc60fe/$exception_pin/g" \
+    -e "s/ef82381d509aac8b5b02da0f784a8176b1c5b9c0/$EXPECTED_SHA/g" \
+    -e 's/40470756538/12345/g' -e 's/"ci_run_attempt": "1"/"ci_run_attempt": "2"/g' \
+    -e 's@Dunky13/takedown@fixture/takedown@g' scripts/verify-apple-fresh-completion.sh > "$WORK/exception-scripts/verify-apple-fresh-completion.sh"
+  bash scripts/test-apple-fresh-completion.sh --emit-fixture "$evidence/acceptance.json" "$MOCK_STATE/completion-provider" fixture/takedown
+  export FIXTURE="$MOCK_STATE/completion-provider" NOTARY_RELEASE_ID=425202908 NOTARY_RELEASE_SOURCE_SHA="$EXPECTED_SHA" NOTARY_STATE_TAG=apple-candidate-v0.0.1
+  NOTARY_RELEASE_BODY_SHA256=$(jq -r .NOTARY_RELEASE_BODY_SHA256 "$FIXTURE/pins.json")
+  export NOTARY_RELEASE_BODY_SHA256
+}
+exception_publish() { bash "$WORK/exception-scripts/publish-release.sh" "$WORK/plan" "$WORK/artifacts" > "$WORK/log" 2>&1; }
+exception_fixture
+exception_publish
+[[ $(jq -r .draft "$MOCK_STATE/release") == false ]]
+for exception_case in missing-parent changed-parent missing-state-and-parent fresh-only-marker stale-signer stale-fresh missing-proof foreign-verification pending blocked counter foreign-parent; do
+  exception_fixture
+  case $exception_case in
+    missing-parent) rm "$evidence/blocked-acceptance-$exception_pin.json" ;;
+    changed-parent) echo ' ' >> "$evidence/blocked-acceptance-$exception_pin.json" ;;
+    missing-state-and-parent|fresh-only-marker)
+      rm "$evidence/acceptance-state.json" "$evidence/blocked-acceptance-$exception_pin.json"
+      if [[ $exception_case == fresh-only-marker ]]; then mutate "$evidence/acceptance.json" 'del(.acceptance_attempts,.acceptance_exception_parent_sha256)'; fi ;;
+    stale-signer) mutate "$evidence/acceptance.json" 'del(.acceptance_attempts,.acceptance_exception_parent_sha256)' ;;
+    stale-fresh) mutate "$evidence/fresh-acceptance.json" 'del(.acceptance_attempts,.acceptance_exception_parent_sha256)' ;;
+    missing-proof) mutate "$evidence/acceptance.json" 'del(.verification_run_id)' ;;
+    foreign-verification) mutate "$evidence/fresh-acceptance.json" '.verification_run_id="999"' ;;
+    pending) mutate "$evidence/acceptance-state.json" '.state="pending"' ;;
+    blocked) mutate "$evidence/acceptance-state.json" '.state="blocked" | .failure_class="cloudkit-transport"' ;;
+    counter) mutate "$evidence/acceptance-state.json" '.attempts=3' ;;
+    foreign-parent) mutate "$evidence/acceptance-state.json" '.acceptance_exception_parent_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' ;;
+  esac
+  if exception_publish; then echo "publisher accepted invalid exception $exception_case" >&2; exit 1; fi
+  no_writes
+done
+echo 'PASS: publisher accepts bound verified4 only with immutable eligible parent and new native/fresh receipts; stale/pending/blocked/foreign/missing/changed evidence cannot promote'
+
 reset_fixture manual
 file="$WORK/artifacts/${names[0]}/takedown-$version-${names[0]}"
 printf corrupted >> "$file"
@@ -417,6 +482,7 @@ for arch in arm64 amd64; do
     'acceptance-state.json|.state="pending"' \
     'acceptance-state.json|.state="blocked"|.failure_class="cloudkit-transport"' \
     'acceptance-state.json|.attempts=4' \
+    'acceptance-state.json|.attempts=4|.acceptance_exception_parent_sha256="27b7a083cc181ed6def7479ec99b25479d7b11d9c3de36bbbd9facfbacfc60fe"' \
     'acceptance-state.json|.attempts=-1' \
     'acceptance-state.json|.failure_class="unclassified"' \
     'acceptance-state.json|.source_commit="bad"' \

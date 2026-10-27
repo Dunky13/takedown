@@ -132,6 +132,11 @@ jobs:
           bash scripts/test-prepare-apple-release.sh
           bash scripts/test-release-source.sh
           bash scripts/test-apple-continuation.sh
+      - name: Offline Apple transport and completion regressions (isolated providers)
+        if: runner.os != 'Windows'
+        run: |
+          env -u GITHUB_ACTIONS bash scripts/test-macos-ticket-transport.sh
+          bash scripts/test-apple-fresh-completion.sh
       - name: Offline Apple submission and artifact handoff regressions
         if: runner.os == 'macOS'
         run: |
