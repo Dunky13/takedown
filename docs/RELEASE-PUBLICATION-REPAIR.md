@@ -1,5 +1,7 @@
 # Cross-platform release publication repair
 
+Repair: [PR #14](https://github.com/Dunky13/takedown/pull/14).
+
 ## Failure and impact
 
 [Release run 40574763682](https://github.com/Dunky13/takedown/actions/runs/40574763682)
