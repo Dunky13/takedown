@@ -20,7 +20,20 @@ to repository secrets or expose them to PR/native-build jobs. The separate manua
 publish releases. Windows signing remains outside this automatic release graph.
 
 Protected main requires `ci-required` and `conventional-commits`, both from GitHub
-Actions. The four-target native matrix and all existing checks remain required.
+Actions. All four native targets remain required: Ubuntu Linux amd64,
+macOS arm64 (`macos-15`), macOS amd64 (`macos-15-intel`) and Windows amd64.
+An independent, required offline Apple fixture matrix runs on both macOS runners
+in parallel with native product builds. It synthesizes its own inputs and runs
+ticket transport, fresh completion, certificate import, signing, signing-input
+and final-package acceptance suites, with a separate log group and elapsed time
+for each suite. Linux also retains transport and completion regressions.
+Every native and Apple fixture matrix job keeps a 30-minute cap and disables
+fail-fast. Native tests, builds, packaging, installation checks and unsigned
+artifact custody remain in the native matrix. `ci-required` always waits for
+both matrices and passes only when both results are `success`; failure,
+cancellation, skipped or missing results fail closed. Reusable `workflow_call`
+consumers, including release and signed-package flows, wait for this full gate.
+All existing checks remain required, with protection names unchanged.
 Automatic candidates reject PR/fork completions, wrong workflow paths, stale
 source events, unprotected main and incomplete/unsuccessful exact-source checks.
 Required checks are bound to the suites of successful `ci.yml` and
@@ -28,7 +41,8 @@ Required checks are bound to the suites of successful `ci.yml` and
 All action references remain pinned and checkout credentials are not persisted.
 GitHub draft discovery requires push-capable access, so the custody reader jobs
 receive `contents: write` on protected main. They receive no Apple secrets.
-The native build matrix retains `contents: read` and no Apple credentials.
+Both native and offline fixture matrices retain `contents: read` and no Apple
+credentials, with checkout bound to the requested source or workflow SHA.
 
 The project adapter is Go 1.26.10, Fyne v2.8.2, Cgo and the untagged native GUI
 binary. Linux amd64 and Windows amd64 remain unsigned. macOS arm64 and amd64
@@ -69,8 +83,9 @@ and never cancels an active release. Native CI builds the versioned candidate on
 without signing secrets. Routine source CI may separately validate that commit;
 its development-version packages are not the release inputs.
 
-After the native aggregate succeeds, a credential-free custody job creates a
-private draft named `apple-candidate-v<VERSION>`. It retains `candidate.json`,
+After the full native and offline-fixture aggregate succeeds, a credential-free
+custody job creates a private draft named `apple-candidate-v<VERSION>`.
+It retains `candidate.json`,
 `plan.json`, notes, original `native.json` metadata and the four original Actions
 artifact ZIPs. The manifest binds repository, clean source, original run/attempt,
 version/channel and metadata hashes. Native artifact IDs and SHA-256 digests
@@ -177,6 +192,26 @@ three-attempt recovery ceiling shared by signing and fresh acceptance runners.
 Unknown or contradictory diagnostics, exhausted budgets and cleanup failures
 block publication. Every retry preserves the archives and repeats the complete
 native checks; pending state invalidates previous acceptance receipts.
+
+Both hosted macOS jobs use an owned temporary PF child anchor and reference to
+prefer TCP for Apple ticket validation. They refuse unsupported PF layouts;
+all native trust checks and verified cleanup remain mandatory. See
+[transport custody and limits](APPLE-TICKET-TRANSPORT.md).
+
+The owner separately authorized one exact ARM fresh qualification for candidate
+425202908's blocked acceptance receipt, advancing spent3 to4 without resetting
+the original counter. `APPLE_REQUALIFY_ACCEPTANCE_SHA256` is a nonsecret approval
+pin, forwarded only to the protected release jobs. Default budgets remain3;
+Intel and other receipts receive no exception. The immutable parent, counterpart
+readiness, native checks, pre-success transport cleanup and receipt gates are
+described in [the exact-parent exception](APPLE-ACCEPTANCE-EXCEPTION.md). A completed
+fresh exception retains its original verification run in durable custody so a
+publication retry can audit that same success without another qualification.
+The exact original fresh job must have completed successfully, and its uploaded
+proof must match the retained native proof bytes. A late verified checkpoint
+from a cancelled or failed job cannot authorize replay. The
+[completion gate](APPLE-FRESH-COMPLETION.md) also checks original automation
+provenance and supports sealed candidate proof retention after Actions expiry.
 
 `APPLE_QUALIFY_CONTINUATION=true` is an optional repository variable for hosted
 recovery qualification. A newly captured, durably retained UUID yields before

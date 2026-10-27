@@ -109,6 +109,13 @@ for arch in arm64 amd64; do
   done
   [[ -z $(find "$evidence" -type l -print) ]] || fail 'symlink in macOS evidence'
   macos_acceptance_ready "$evidence" || fail "final macOS acceptance incomplete or mismatched: $arch"
+  if [[ -f $evidence/acceptance-state.json ]] && jq -e 'has("acceptance_exception_parent_sha256")' "$evidence/acceptance-state.json" >/dev/null; then
+    jq -e --slurpfile state "$evidence/acceptance-state.json" --slurpfile native "$evidence/acceptance.json" '.acceptance_attempts == 4 and
+      .verification_run_id == $native[0].verification_run_id and .verification_run_attempt == $native[0].verification_run_attempt and
+      .verification_workflow_sha == $native[0].verification_workflow_sha and
+      .acceptance_exception_parent_sha256 == $state[0].acceptance_exception_parent_sha256' \
+      "$evidence/fresh-acceptance.json" >/dev/null || fail "stale exceptional fresh acceptance: $arch"
+  fi
   runner_arch=ARM64
   [[ $arch != amd64 ]] || runner_arch=X64
   artifact_name="unsigned-native-macOS-$runner_arch-$sha"

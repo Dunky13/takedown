@@ -78,6 +78,7 @@ jobs:
       - name: Native workflow validation
         if: runner.os == 'Linux'
         run: |
+          bash scripts/test-ci-topology.sh
           GOBIN="$RUNNER_TEMP/actionlint" go install -p 2 github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           "$RUNNER_TEMP/actionlint/actionlint"
       - name: Windows native C compiler and race runtime
@@ -132,13 +133,11 @@ jobs:
           bash scripts/test-prepare-apple-release.sh
           bash scripts/test-release-source.sh
           bash scripts/test-apple-continuation.sh
-      - name: Offline Apple submission and artifact handoff regressions
-        if: runner.os == 'macOS'
+      - name: Offline Apple transport and completion regressions (isolated providers)
+        if: runner.os == 'Linux'
         run: |
-          bash scripts/test-macos-certificate-import.sh
-          bash scripts/test-sign-macos.sh
-          bash scripts/test-prepare-macos-signing.sh
-          bash scripts/test-verify-macos-package.sh
+          env -u GITHUB_ACTIONS bash scripts/test-macos-ticket-transport.sh
+          bash scripts/test-apple-fresh-completion.sh
       - name: Release version and publication regressions (offline fixtures)
         if: runner.os == 'Linux'
         run: |
@@ -199,18 +198,98 @@ jobs:
           retention-days: 7
           compression-level: 0
 
+  apple-fixtures:
+    name: Offline Apple fixtures ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            goos: darwin
+            goarch: arm64
+          - os: macos-15-intel
+            goos: darwin
+            goarch: amd64
+    env:
+      CGO_ENABLED: '1'
+      GOMAXPROCS: '2'
+      GOFLAGS: -mod=readonly
+      GOTOOLCHAIN: local
+      CI_EXPECTED_GOOS: ${{ matrix.goos }}
+      CI_EXPECTED_GOARCH: ${{ matrix.goarch }}
+      VERSION: ${{ inputs.package_version || '0.0.0' }}
+      RELEASE_VERSION: ${{ inputs.release_version || '0.0.0' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Fixtures synthesize their own inputs; no native build/artifact dependency.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          fetch-depth: 2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.10'
+          check-latest: false
+          cache: false
+      - name: Offline Apple ticket transport fixtures
+        run: |
+          printf '::group::test-macos-ticket-transport.sh (%s)\n' "$CI_EXPECTED_GOARCH"
+          trap 'printf "::endgroup::\n"' EXIT
+          TIMEFORMAT='fixture test-macos-ticket-transport.sh: %3R seconds'
+          time env -u GITHUB_ACTIONS bash scripts/test-macos-ticket-transport.sh
+      - name: Offline Apple fresh completion fixtures
+        run: |
+          printf '::group::test-apple-fresh-completion.sh (%s)\n' "$CI_EXPECTED_GOARCH"
+          trap 'printf "::endgroup::\n"' EXIT
+          TIMEFORMAT='fixture test-apple-fresh-completion.sh: %3R seconds'
+          time bash scripts/test-apple-fresh-completion.sh
+      - name: Offline macOS certificate import fixtures
+        run: |
+          printf '::group::test-macos-certificate-import.sh (%s)\n' "$CI_EXPECTED_GOARCH"
+          trap 'printf "::endgroup::\n"' EXIT
+          TIMEFORMAT='fixture test-macos-certificate-import.sh: %3R seconds'
+          time bash scripts/test-macos-certificate-import.sh
+      - name: Offline macOS signing fixtures
+        run: |
+          printf '::group::test-sign-macos.sh (%s)\n' "$CI_EXPECTED_GOARCH"
+          trap 'printf "::endgroup::\n"' EXIT
+          TIMEFORMAT='fixture test-sign-macos.sh: %3R seconds'
+          time bash scripts/test-sign-macos.sh
+      - name: Offline macOS signing input fixtures
+        run: |
+          printf '::group::test-prepare-macos-signing.sh (%s)\n' "$CI_EXPECTED_GOARCH"
+          trap 'printf "::endgroup::\n"' EXIT
+          TIMEFORMAT='fixture test-prepare-macos-signing.sh: %3R seconds'
+          time bash scripts/test-prepare-macos-signing.sh
+      - name: Offline macOS final package acceptance fixtures
+        run: |
+          printf '::group::test-verify-macos-package.sh (%s)\n' "$CI_EXPECTED_GOARCH"
+          trap 'printf "::endgroup::\n"' EXIT
+          TIMEFORMAT='fixture test-verify-macos-package.sh: %3R seconds'
+          time bash scripts/test-verify-macos-package.sh
+
   ci-required:
     name: ci-required
-    needs: native
+    needs: [native, apple-fixtures]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       NATIVE_RESULT: ${{ needs.native.result }}
+      APPLE_FIXTURES_RESULT: ${{ needs.apple-fixtures.result }}
     steps:
-      - name: Require every native matrix job to succeed
+      - name: Require every native and Apple fixture matrix job to succeed
         run: |
           if [[ $NATIVE_RESULT != success ]]; then
             printf 'Native matrix did not succeed: %s\n' "$NATIVE_RESULT" >&2
+            exit 1
+          fi
+          if [[ $APPLE_FIXTURES_RESULT != success ]]; then
+            printf 'Apple fixture matrix did not succeed: %s\n' "$APPLE_FIXTURES_RESULT" >&2
             exit 1
           fi

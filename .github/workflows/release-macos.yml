@@ -123,8 +123,14 @@ jobs:
         run: |
           env GITHUB_SHA="$NOTARY_SOURCE_SHA" GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash scripts/load-apple-input.sh
           go build -mod=readonly -p 2 -o "$RUNNER_TEMP/releasectl" ./cmd/releasectl
+      - name: Set up owned Apple ticket transport preference
+        id: transport_setup
+        env:
+          MACOS_TICKET_TRANSPORT_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: bash scripts/macos-ticket-transport.sh setup
       - name: Continue exact Apple stages and verify installed final candidate
         env:
+          MACOS_TICKET_TRANSPORT_RUNNER_ENVIRONMENT: ${{ runner.environment }}
           BINARY: ${{ steps.source.outputs.binary }}
           MODE: release
           RELEASECTL: ${{ runner.temp }}/releasectl
@@ -140,8 +146,16 @@ jobs:
           NOTARY_YIELD_AFTER_SUBMIT: ${{ vars.APPLE_QUALIFY_CONTINUATION == 'true' && 'true' || 'false' }}
           # Nonsecret exact terminal-receipt approval, consumed only on protected main.
           NOTARY_REQUALIFY_RECEIPT_SHA256: ${{ vars.APPLE_REQUALIFY_RECEIPT_SHA256 }}
+          NOTARY_ACCEPTANCE_REQUALIFY_SHA256: ${{ vars.APPLE_REQUALIFY_ACCEPTANCE_SHA256 }}
+          NOTARY_ACCEPTANCE_CLEANUP_HOOK: ${{ github.workspace }}/scripts/macos-ticket-transport.sh
         run: |
-          env GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash scripts/continue-apple-release.sh
+          bash scripts/macos-ticket-transport.sh run env GITHUB_RUN_ID="$ORIGIN_RUN" GITHUB_RUN_ATTEMPT="$ORIGIN_ATTEMPT" bash scripts/continue-apple-release.sh
+      - name: Verify owned Apple ticket transport cleanup
+        id: transport_cleanup
+        if: always() && steps.transport_setup.outcome != 'skipped'
+        env:
+          MACOS_TICKET_TRANSPORT_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: bash scripts/macos-ticket-transport.sh cleanup
       - name: Preserve allowlisted failure receipts
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -152,6 +166,7 @@ jobs:
             ${{ runner.temp }}/notary-evidence/checkpoint.json
             ${{ runner.temp }}/notary-evidence/acceptance.json
             ${{ runner.temp }}/notary-evidence/acceptance-state.json
+            ${{ runner.temp }}/notary-evidence/blocked-acceptance-27b7a083cc181ed6def7479ec99b25479d7b11d9c3de36bbbd9facfbacfc60fe.json
             ${{ runner.temp }}/notary-evidence/*/receipt.json
             ${{ runner.temp }}/notary-evidence/*/blocked-receipt-*.json
             ${{ runner.temp }}/notary-evidence/*/apple-log.json
@@ -188,8 +203,15 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PRODUCT_SHA: ${{ inputs.checkout_ref }}
         run: bash scripts/release-source.sh verify "$PRODUCT_SHA"
-      - name: Install and assess exact final bytes on fresh native runner
+      - name: Set up owned Apple ticket transport preference
+        id: transport_setup
         env:
+          MACOS_TICKET_TRANSPORT_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: bash scripts/macos-ticket-transport.sh setup
+      - name: Install and assess exact final bytes on fresh native runner
+        id: native_acceptance
+        env:
+          MACOS_TICKET_TRANSPORT_RUNNER_ENVIRONMENT: ${{ runner.environment }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           NOTARY_SOURCE_SHA: ${{ inputs.checkout_ref }}
@@ -200,12 +222,59 @@ jobs:
           ORIGIN_RUN: ${{ inputs.origin_run }}
           ORIGIN_ATTEMPT: ${{ inputs.origin_attempt }}
           NOTARY_EVIDENCE_DIR: ${{ runner.temp }}/fresh-evidence
+          NOTARY_ACCEPTANCE_REQUALIFY_SHA256: ${{ vars.APPLE_REQUALIFY_ACCEPTANCE_SHA256 }}
+          NOTARY_ACCEPTANCE_CLEANUP_HOOK: ${{ github.workspace }}/scripts/macos-ticket-transport.sh
           DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-        run: bash scripts/fresh-apple-acceptance.sh
+        run: |
+          bash scripts/macos-ticket-transport.sh run bash -euo pipefail -c '
+            bash scripts/fresh-apple-acceptance.sh
+            receipt="$NOTARY_EVIDENCE_DIR/fresh-acceptance-$NOTARY_ARCH.json"
+            if [[ -f $receipt ]]; then mv -- "$receipt" "$receipt.pending"; fi
+          '
+      - name: Verify owned cleanup before fresh receipt promotion
+        id: transport_cleanup
+        if: always() && steps.transport_setup.outcome != 'skipped'
+        env:
+          MACOS_TICKET_TRANSPORT_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          ARCH: ${{ matrix.arch }}
+          NATIVE_ACCEPTANCE_OUTCOME: ${{ steps.native_acceptance.outcome }}
+        run: |
+          receipt="$RUNNER_TEMP/fresh-evidence/fresh-acceptance-$ARCH.json"
+          if ! bash scripts/macos-ticket-transport.sh cleanup; then
+            rm -f -- "$receipt" "$receipt.pending"
+            exit 1
+          fi
+          if [[ $NATIVE_ACCEPTANCE_OUTCOME != success ]]; then
+            rm -f -- "$receipt" "$receipt.pending"
+          fi
+      - name: Promote fresh receipt after verified transport cleanup
+        if: success() && steps.transport_cleanup.outcome == 'success'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          receipt="$RUNNER_TEMP/fresh-evidence/fresh-acceptance-$ARCH.json"
+          if [[ -f $receipt.pending ]]; then mv -- "$receipt.pending" "$receipt"; fi
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: success() && steps.transport_cleanup.outcome == 'success'
         with:
           name: macos-fresh-acceptance-${{ matrix.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/fresh-evidence/fresh-acceptance-${{ matrix.arch }}.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Preserve allowlisted fresh failure evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: macos-fresh-diagnostics-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/fresh-evidence/input.json
+            ${{ runner.temp }}/fresh-evidence/checkpoint.json
+            ${{ runner.temp }}/fresh-evidence/acceptance.json
+            ${{ runner.temp }}/fresh-evidence/acceptance-state.json
+            ${{ runner.temp }}/fresh-evidence/blocked-acceptance-27b7a083cc181ed6def7479ec99b25479d7b11d9c3de36bbbd9facfbacfc60fe.json
+            ${{ runner.temp }}/fresh-evidence/*/receipt.json
+            ${{ runner.temp }}/fresh-evidence/*/blocked-receipt-*.json
+            ${{ runner.temp }}/fresh-evidence/*/apple-log.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -267,5 +336,11 @@ jobs:
         run: |
           for arch in arm64 amd64; do
             file="fresh-acceptance-$arch.json"
-            bash scripts/apple-release-state.sh put "fresh-acceptance-$arch-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" ".local/fresh-acceptance/$file"
+            proof=".local/fresh-acceptance/$file"
+            proof_run=$(jq -er '.verification_run_id | select(type == "string" and test("^[1-9][0-9]*$"))' "$proof")
+            proof_attempt=$(jq -er '.verification_run_attempt | select(type == "string" and test("^[1-9][0-9]*$"))' "$proof")
+            original="fresh-acceptance-$arch-$proof_run-$proof_attempt.json"
+            current="fresh-acceptance-$arch-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+            bash scripts/apple-release-state.sh put "$original" "$proof"
+            if [[ $current != "$original" ]]; then bash scripts/apple-release-state.sh put "$current" "$proof"; fi
           done

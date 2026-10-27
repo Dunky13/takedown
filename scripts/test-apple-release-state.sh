@@ -31,11 +31,19 @@ cp "$TEST_WORK/parent.json" "$TEST_WORK/evidence/app/blocked-receipt-$parent_sha
 state() { bash "$ROOT/scripts/apple-release-state.sh" "$@" > "$TEST_WORK/log" 2>&1; }
 reject() { if state "$@"; then echo 'expected custody failure' >&2; exit 1; fi; }
 printf '{"synthetic":"archive-bound acceptance pending counter"}\n' > "$TEST_WORK/evidence/acceptance-state.json"
+acceptance_parent=blocked-acceptance-27b7a083cc181ed6def7479ec99b25479d7b11d9c3de36bbbd9facfbacfc60fe.json
+cp "$TEST_WORK/parent.json" "$TEST_WORK/evidence/$acceptance_parent"
 state save "$TEST_WORK/evidence"
 state restore "$TEST_WORK/restored"
 cmp "$TEST_WORK/evidence/input.json" "$TEST_WORK/restored/input.json"
 cmp "$TEST_WORK/evidence/acceptance-state.json" "$TEST_WORK/restored/acceptance-state.json"
 cmp "$TEST_WORK/parent.json" "$TEST_WORK/restored/app/blocked-receipt-$parent_sha.json"
+cmp "$TEST_WORK/parent.json" "$TEST_WORK/restored/$acceptance_parent"
+# Custody allows only the exact approved acceptance-parent filename. The policy
+# layer separately validates these fixture bytes before qualification/promotion.
+cp "$TEST_WORK/parent.json" "$TEST_WORK/evidence/blocked-acceptance-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
+reject save "$TEST_WORK/evidence"
+rm "$TEST_WORK/evidence/blocked-acceptance-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
 printf '{"synthetic":true,"stage":"prepared"}\n' > "$TEST_WORK/evidence/input.json"
 state save "$TEST_WORK/evidence"
 state restore "$TEST_WORK/restored-new"

@@ -2,6 +2,29 @@
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 export NOTARY_CHECKPOINT_HOOK="$ROOT/scripts/apple-checkpoint.sh"
+# shellcheck source=scripts/macos-ticket-policy.sh
+source "$ROOT/scripts/macos-ticket-policy.sh"
+macos_acceptance_custody "$NOTARY_EVIDENCE_DIR" || { echo 'Acceptance custody is incomplete or invalid; no mutation permitted.' >&2; exit 1; }
+export NOTARY_ACCEPTANCE_FRESH=false
+# The signer only hands off this exact approved terminal candidate. It cannot
+# consume the fresh runner's reservation or manufacture an acceptance receipt.
+if macos_acceptance_exception_eligible "$NOTARY_EVIDENCE_DIR"; then
+  parent="$NOTARY_EVIDENCE_DIR/blocked-acceptance-$NOTARY_ACCEPTANCE_REQUALIFY_SHA256.json"
+  if [[ ! -e $parent ]]; then cp -p "$NOTARY_EVIDENCE_DIR/acceptance-state.json" "$parent"; fi
+  cmp -s "$parent" "$NOTARY_EVIDENCE_DIR/acceptance-state.json"
+  rm -f "$NOTARY_EVIDENCE_DIR/acceptance.json" "$NOTARY_EVIDENCE_DIR/fresh-acceptance-$NOTARY_ARCH.json" "$NOTARY_EVIDENCE_DIR/fresh-acceptance-$NOTARY_ARCH.json.pending"
+  bash "$NOTARY_CHECKPOINT_HOOK" "$NOTARY_EVIDENCE_DIR"
+  echo 'Exact blocked ARM finals retained for approved credential-free qualification; no native attempt spent.'
+  exit 0
+fi
+# Completed exceptional evidence remains reusable for publication, without
+# running a fifth check on a signer. Its fresh receipt is still mandatory.
+if [[ -f $NOTARY_EVIDENCE_DIR/acceptance-state.json ]] &&
+  jq -e 'has("acceptance_exception_parent_sha256")' "$NOTARY_EVIDENCE_DIR/acceptance-state.json" >/dev/null; then
+  macos_acceptance_ready "$NOTARY_EVIDENCE_DIR" || exit 1
+  bash "$NOTARY_CHECKPOINT_HOOK" "$NOTARY_EVIDENCE_DIR"
+  exit 0
+fi
 status=0
 if [[ -e $NOTARY_EVIDENCE_DIR/acceptance-state.json || -L $NOTARY_EVIDENCE_DIR/acceptance-state.json ]]; then
   if ! [[ -f $NOTARY_EVIDENCE_DIR/acceptance-state.json && ! -L $NOTARY_EVIDENCE_DIR/acceptance-state.json &&
