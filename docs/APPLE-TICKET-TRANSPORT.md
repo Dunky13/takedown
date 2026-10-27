@@ -36,8 +36,18 @@ unconditioned `anchor "com.apple/*" all`, with only the standard optional
 the root ruleset. A uniquely named direct child of `com.apple` carries one
 `block return out quick proto udp ... port 443` rule. Existing child anchors must
 sort after the owned child, so an earlier quick pass cannot skip the guard.
-Unsupported root layouts, collisions, status/reference combinations or readback
-formats fail setup without a global-rules fallback.
+The inventory supports a consistent set of direct child leaves, or a consistent
+set of exactly `com.apple/LEAF` paths. Only leading horizontal display indentation
+is removed. Every leaf must match `[A-Za-z0-9_][A-Za-z0-9_.-]*` and fit the PF
+64-byte name buffer including its terminator. Empty inventories are supported;
+blank rows, duplicates, mixed spellings, other prefixes, trailing whitespace,
+control characters (including embedded NUL bytes before `awk` parsing), relative
+traversal and deeper paths are refused. Ordering is
+checked on the exact child component in either representation. The sorted
+nonowned rows retain their original spelling and must compare byte for byte;
+changing a sibling from leaf to qualified form is drift, even if it denotes the
+same path. Unsupported root layouts, collisions, status/reference combinations
+or readback formats fail setup without a global-rules fallback.
 
 The child name contains the actual workflow run, attempt and job discriminator,
 plus 96 random bits, and is shorter than 64 characters. Private custody binds it
@@ -90,8 +100,25 @@ SIGKILL cannot execute traps; the jobs are restricted to disposable hosted VMs.
 
 Cleanup flushes only the owned child rules and releases only the acquired token
 with `-X`. It never restores a saved root ruleset over another writer's changes.
-It requires empty owned rules, unchanged root and sibling inventories, original
+Before releasing its enable token, it requires empty owned filter rules, NAT
+rules, tables and direct-child inventory, with successful fresh captures for each.
+Unexpected auxiliary contents cause refusal without flushing those contents.
+It then requires unchanged root and nonowned sibling inventories, original
 reference identities, and the original enabled state before recording completion.
+The owned row must occur exactly once during setup and active checks, as either
+the exact leaf or the exact qualified custody path in the inventory's consistent
+representation. Completed cleanup permits that same row to disappear or remain
+once, provided a private `load-attempted` journal binds it to this helper and all
+the empty-namespace and preservation checks pass again. No other row is removed
+from comparison. An empty pre-existing collision is still refused.
+
+This is an explicit namespace-lifetime distinction: cleanup removes the helper's
+packet-filtering effect and restores original nonowned state; it does not promise
+that PF deallocates its exact empty owned namespace. The namespace is retained
+only on disposable hosted VMs and is never reused. A replay still refuses rules,
+NAT, tables, descendants, duplicates, mixed aliases or foreign inventory drift.
+There is no root reload, recursive flush, broad `-F all`, state flush, or attempt
+to force kernel reference release to delete a name.
 A replay after reference release can recognize exact original references/status
 without releasing the token twice. Repeated completed cleanup performs readback
 without further mutation. Missing, corrupt, symlinked, public or differently
@@ -114,9 +141,10 @@ the successful capture from that predicate. Failed captures report
 evidence. Rule/root records contain only line counts and a SHA-256 digest.
 Anchor records contain line counts, exact owned-leaf and owned-qualified match
 counts, and whether the remaining sorted inventory matches the original bytes.
-These classifications do not alter the strict acceptance comparison or permit
-either spelling. They distinguish an owned-name representation or lingering
-owned child from a foreign inventory change without disclosing anchor names.
+These classifications do not relax the acceptance comparisons. They distinguish
+an owned-name representation or lingering owned child from a foreign inventory
+change without disclosing anchor names. An auxiliary namespace capture failing
+before the parent inventory is captured reports `available=false`.
 No diagnostic performs another PF command or changes cleanup decisions.
 Diagnostic writes are best effort and preserve the underlying predicate status,
 including when stdout is closed. They cannot skip later successful preservation
@@ -126,14 +154,46 @@ Each diagnostic write uses a child stdio context: Bash 3.2 can otherwise retain
 a failed builtin write and flush its buffered text into a later private-file
 redirection. Diagnostic output cannot contaminate subsequent rule comparisons.
 
-The aggregate load failure alone cannot distinguish rule canonicalization,
-root drift, or anchor inventory mismatch. The aggregate preservation failure
-alone cannot distinguish root, references, enabled state, owned rules, or
-anchor inventory. Local parser output and synthetic inventory models do not
-establish the hosted macOS readback format or the lifetime of an empty child.
-Do not normalize additional formats or permit a lingering owned child based
-on these aggregate errors. Such a change needs platform evidence that also
-distinguishes the exact empty owned child from foreign or newly added anchors.
+### Evidence for the supported inventory and namespace lifetime
+
+Hosted macOS 15 sign jobs `122392707722` (scheduled ARM), `122388659916`
+(workflow-run ARM) and `122388659873` (workflow-run Intel), observed on
+2026-10-27, reported successful rule/root setup readback followed by inventory
+failure: three rows, zero exact owned leaves, one exact qualified owned path,
+and remaining rows equal to the original inventory. After scoped cleanup they
+reported unchanged root/references/status and empty owned filter rules, followed
+by the same qualified-row inventory failure. These safe classifications establish
+the observed representation and retained owned row; they do not disclose raw PF
+state or prove why that kernel retained it. Apple credentials remained skipped.
+
+The installed macOS `pfctl(8)` manual specifies direct children for
+`-a ANCHOR -s Anchors` and scoped `-a` rule operations; it does not promise that
+printed children are unqualified leaves or that a rule flush deletes a namespace.
+Apple's tagged [ruleset implementation](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.101.15/bsd/net/pf_ruleset.c#L178-L228)
+separates finding/referencing an anchor from its active rules. Its
+[empty-ruleset removal conditions](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.101.15/bsd/net/pf_ruleset.c#L417-L474)
+include reference count, children, tables, pending transactions, and active and
+inactive rule queues. Consequently, an empty active filter ruleset alone does
+not imply namespace removal. The supported scoped flush is retained: neither
+the manual nor those conditions provides a safe standalone name-delete operation
+that justifies a wider flush or another ruleset reload.
+
+The [Apple evaluator](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.101.15/bsd/net/pf.c#L3114-L3185)
+walks direct children and reads each child's active queue for the evaluated rule
+category; an empty queue supplies no rule. This supports the narrow distinction
+between a retained name and an active filtering effect. The helper additionally
+checks empty NAT, table and child readbacks rather than treating any retained
+namespace as safe. The source tag is an authoritative implementation reference,
+not a claim of a byte match to the hosted kernel or userland. No cause such as a
+specific reference leak is asserted. Private kernel references and inactive
+transactions are not measured by these readbacks; they are not force-released.
+
+The previous aggregate failures alone were insufficient evidence. These hosted
+predicate/shape observations now support only the exact owned spellings and
+lifecycle described above. Parser-only `-n` output and mock success remain
+insufficient to establish native PF/TCP behavior, Apple acceptance or publication.
+The repaired helper still requires new hosted lifecycle qualification on both
+architectures, including failure and handled cancellation, before that claim.
 
 Cleanup failure fails the operation/job even when native verification succeeded.
 The native verifier calls the same cleanup helper before it writes success or a
@@ -168,10 +228,23 @@ bash scripts/test-macos-ticket-transport.sh --readback-diagnostics
 ```
 
 These scenarios inject each failed readback predicate at the real helper
-lifecycle seam, including unsupported qualified anchor output and a retained
-empty child. Both hypotheses remain refused; they are not captured native
-behavior or proof of a hosted root cause. The full suite retains its original
-negative, cancellation, credential, custody, and workflow assertions.
+lifecycle seam, including mixed leaf/qualified aliases and foreign inventory
+changes. To select the new inventory and empty-namespace regressions only:
+
+```sh
+bash scripts/test-macos-ticket-transport.sh --anchor-custody
+```
+
+The new fixtures reproduce the observed three-row qualified shape using synthetic
+identities, then exercise setup, active checks, guarded pre-success cleanup,
+repeated cleanup and later namespace disappearance. They preserve the leaf-format
+compatibility case and reject duplicates, mixed aliases, malformed/hierarchical
+paths, sibling drift, unexpected owned contents and failed captures. Supported
+qualified output and an exactly bound empty namespace replace the earlier
+hypothesis refusals explicitly; their adversarial boundaries remain tested.
+The full suite retains its original negative, cancellation, credential, custody,
+diagnostic-output-I/O and workflow assertions. These fixtures are mock regressions,
+not native qualification or proof of a kernel root cause.
 
 It creates an owned temporary model directory with an explicit mock marker and
 PF driver, and executes the real helper lifecycle against that model. It also

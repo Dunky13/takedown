@@ -31,15 +31,47 @@ case "$*" in
     fi ;;
   '-s Anchors')
     if [[ $anchor == com.apple ]]; then
-      cat "$m/anchors"
+      if [[ ${MOCK_QUALIFIED_ANCHORS:-false} == true ]]; then
+        sed 's|^|com.apple/|' "$m/anchors"
+      else
+        cat "$m/anchors"
+      fi
       if [[ -s $m/rules || ( ${MOCK_KEEP_EMPTY_ANCHOR:-false} == true && -f $m/owned ) ]]; then
-        if [[ ${MOCK_QUALIFIED_ANCHORS:-false} == true ]]; then
+        if [[ ${MOCK_ANCHOR_INJECTION:-} == nul ]]; then
+          if [[ ${MOCK_QUALIFIED_ANCHORS:-false} == true ]]; then printf 'com.apple/'; fi
+          printf '%s\000/child\n' "$(cat "$m/owned")"
+        elif [[ ${MOCK_QUALIFIED_ANCHORS:-false} == true ]]; then
           sed 's|^|com.apple/|' "$m/owned"
         else
           cat "$m/owned"
         fi
       fi
+      if [[ -f $m/owned ]]; then
+        case ${MOCK_ANCHOR_INJECTION:-} in
+          duplicate)
+            if [[ ${MOCK_QUALIFIED_ANCHORS:-false} == true ]]; then sed 's|^|com.apple/|' "$m/owned"; else cat "$m/owned"; fi ;;
+          mixed)
+            if [[ ${MOCK_QUALIFIED_ANCHORS:-false} == true ]]; then cat "$m/owned"; else sed 's|^|com.apple/|' "$m/owned"; fi ;;
+          foreign) echo '950.foreign-mock-secret' ;;
+          hierarchy) sed 's|$|/child|' "$m/owned" ;;
+          traversal) sed 's|^|com.apple/../|' "$m/owned" ;;
+          suffix) sed 's|$|.foreign|' "$m/owned" ;;
+          leading-slash) sed 's|^|/com.apple/|' "$m/owned" ;;
+          trailing-space) sed 's|$| |' "$m/owned" ;;
+          blank) echo ;;
+        esac
+      fi
+      if [[ ${MOCK_ANCHOR_CAPTURE_FAIL:-false} == true && -f $m/owned ]]; then
+        echo 'mock-secret partial inventory'; exit 7
+      fi
+    else
+      [[ ${MOCK_OWNED_CONTENT:-} != children ]] || echo 'child'
+      [[ ${MOCK_AUX_CAPTURE_FAIL:-} != Anchors ]] || exit 7
     fi ;;
+  '-s nat'|'-s Tables')
+    [[ $anchor == com.apple/000.takedown-* ]] || exit 90
+    [[ ${MOCK_OWNED_CONTENT:-} != "$2" ]] || echo 'mock-secret unexpected contents'
+    [[ ${MOCK_AUX_CAPTURE_FAIL:-} != "$2" ]] || exit 7 ;;
   '-s info') printf 'Status: %s                              Debug: Urgent\n' "$(cat "$m/enabled")" ;;
   '-s References')
     printf 'TOKENS:\n'
@@ -97,9 +129,154 @@ preserved() {
   cmp "$MACOS_TICKET_TRANSPORT_TEST_ROOT/root" "$(state_dir)/root.before"
   cmp "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs" "$TEST_WORK/refs.before"
 }
-# These are hypothesis injections, not captured hosted PF output. The real
-# lifecycle must identify its failing predicate without accepting new formats
-# or exposing private readbacks. Run alone for a small red/green feedback loop.
+# Hosted jobs 122392707722, 122388659916 and 122388659873 observed one exact
+# qualified owned row, two unchanged siblings, and the same row after rule flush.
+# These fixtures reproduce that shape with synthetic names, never raw host PF.
+anchor_custody_tests() {
+  local format injection phase calls
+  for format in true false; do
+    reset_fixture
+    printf '800.service\n900.service\n' > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/anchors"
+    cp "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs" "$TEST_WORK/refs.before"
+    export MOCK_QUALIFIED_ANCHORS=$format MOCK_KEEP_EMPTY_ANCHOR=true
+    if ! helper setup; then
+      cat "$TEST_WORK/log" >&2
+      echo 'FAIL: exact uniquely bound owned inventory must permit setup' >&2; exit 1
+    fi
+    helper check
+    helper run bash "$ROOT/scripts/macos-ticket-transport.sh" cleanup
+    preserved Enabled
+    helper cleanup
+    # A retained namespace can disappear later without changing preservation.
+    unset MOCK_KEEP_EMPTY_ANCHOR
+    helper cleanup
+    unset MOCK_QUALIFIED_ANCHORS
+  done
+  printf 'PASS: hosted qualified row and empty owned namespace lifecycle; leaf compatibility retained\n'
+  for format in false true; do
+    export MOCK_QUALIFIED_ANCHORS=$format
+  for injection in duplicate mixed foreign hierarchy traversal suffix leading-slash trailing-space blank nul; do
+    reset_fixture
+    MOCK_ANCHOR_INJECTION=$injection refuse setup
+    [[ ! -f $(state_dir)/enable-attempted && ! -f $MACOS_TICKET_TRANSPORT_TEST_ROOT/token ]]
+    helper cleanup
+    for phase in active cleanup post-cleanup; do
+      reset_fixture; helper setup
+      if [[ $phase == post-cleanup ]]; then helper cleanup; fi
+      if [[ $phase == active ]]; then
+        MOCK_ANCHOR_INJECTION=$injection refuse check
+      else
+        MOCK_KEEP_EMPTY_ANCHOR=true MOCK_ANCHOR_INJECTION=$injection refuse cleanup
+        [[ $phase == post-cleanup || ! -f $(state_dir)/cleaned ]]
+      fi
+      helper cleanup
+    done
+  done
+    unset MOCK_QUALIFIED_ANCHORS
+  done
+  printf 'PASS: duplicate, mixed, foreign, hierarchical and malformed inventories refused throughout lifecycle\n'
+  for injection in nat Tables children; do
+    reset_fixture; helper setup
+    MOCK_OWNED_CONTENT=$injection refuse check
+    MOCK_KEEP_EMPTY_ANCHOR=true MOCK_OWNED_CONTENT=$injection refuse cleanup
+    [[ ! -f $(state_dir)/cleaned && -f $MACOS_TICKET_TRANSPORT_TEST_ROOT/token ]]
+    helper cleanup
+    MOCK_KEEP_EMPTY_ANCHOR=true MOCK_OWNED_CONTENT=$injection refuse cleanup
+  done
+  for injection in nat Tables Anchors; do
+    reset_fixture; helper setup
+    MOCK_AUX_CAPTURE_FAIL=$injection refuse check
+    MOCK_KEEP_EMPTY_ANCHOR=true MOCK_AUX_CAPTURE_FAIL=$injection refuse cleanup
+    [[ ! -f $(state_dir)/cleaned && -f $MACOS_TICKET_TRANSPORT_TEST_ROOT/token ]]
+    helper cleanup
+  done
+  reset_fixture
+  MOCK_ANCHOR_CAPTURE_FAIL=true refuse setup
+  [[ ! -f $(state_dir)/enable-attempted ]]
+  helper cleanup
+  reset_fixture; helper setup
+  MOCK_ANCHOR_CAPTURE_FAIL=true refuse check
+  MOCK_KEEP_EMPTY_ANCHOR=true MOCK_ANCHOR_CAPTURE_FAIL=true refuse cleanup
+  [[ ! -f $(state_dir)/cleaned ]]
+  helper cleanup
+  # Unsupported baselines cannot authorize any mutation, including an empty
+  # pre-existing owned-name collision. Duplicate canonical aliases are invalid.
+  for injection in '900.service' '900.service/child' 'com.apple/../escape' '900.service ' 'com.apple/900.service'; do
+    reset_fixture
+    printf '%s\n' "$injection" >> "$MACOS_TICKET_TRANSPORT_TEST_ROOT/anchors"
+    refuse setup
+    if grep -Eq -- '(^| )(-f|-F|-E|-X)( |$)' "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls"; then
+      echo 'FAIL: invalid baseline reached mutation' >&2; exit 1
+    fi
+  done
+  reset_fixture
+  printf '900.service\000/child\n' > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/anchors"
+  refuse setup
+  if grep -Eq -- '(^| )(-f|-F|-E|-X)( |$)' "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls"; then
+    echo 'FAIL: NUL-bearing baseline reached mutation' >&2; exit 1
+  fi
+  reset_fixture
+  printf 'com.apple/000.ahead-of-guard\n' > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/anchors"
+  refuse setup
+  printf 'PASS: owned contents, failed captures and invalid baseline fail closed; qualified ordering enforced\n'
+  # Existing baseline identities cannot change spelling, disappear, or be
+  # replaced while the exact owned path is present or retained after flush.
+  for injection in spelling removed replaced; do
+    reset_fixture
+    cp "$MACOS_TICKET_TRANSPORT_TEST_ROOT/anchors" "$TEST_WORK/anchors.saved"
+    export MOCK_QUALIFIED_ANCHORS=true MOCK_KEEP_EMPTY_ANCHOR=true
+    helper setup
+    case $injection in
+      spelling) unset MOCK_QUALIFIED_ANCHORS ;;
+      removed) : > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/anchors" ;;
+      replaced) echo '950.service' > "$MACOS_TICKET_TRANSPORT_TEST_ROOT/anchors" ;;
+    esac
+    refuse check; refuse cleanup
+    [[ ! -f $(state_dir)/cleaned ]]
+    cp "$TEST_WORK/anchors.saved" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/anchors"
+    export MOCK_QUALIFIED_ANCHORS=true
+    helper cleanup
+    unset MOCK_QUALIFIED_ANCHORS MOCK_KEEP_EMPTY_ANCHOR
+  done
+  for injection in load readback enable signal-load signal-enable; do
+    reset_fixture
+    cp "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs" "$TEST_WORK/refs.before"
+    export MOCK_QUALIFIED_ANCHORS=true MOCK_KEEP_EMPTY_ANCHOR=true
+    case $injection in
+      load) MOCK_LOAD_FAIL=true refuse setup ;;
+      readback) MOCK_BAD_READBACK=true refuse setup ;;
+      enable) MOCK_ENABLE_FAIL=true refuse setup ;;
+      signal-load) MOCK_SIGNAL_LOAD=true refuse setup ;;
+      signal-enable) MOCK_SIGNAL_ENABLE=true refuse setup ;;
+    esac
+    preserved Enabled
+    helper cleanup
+    unset MOCK_QUALIFIED_ANCHORS MOCK_KEEP_EMPTY_ANCHOR
+  done
+  printf 'PASS: qualified sibling drift refused and failed/interrupted setup preserves original state\n'
+  reset_fixture
+  export MOCK_QUALIFIED_ANCHORS=true MOCK_KEEP_EMPTY_ANCHOR=true
+  helper setup; helper cleanup
+  mv "$(state_dir)/load-attempted" "$TEST_WORK/load.saved"
+  # The cleaned marker alone cannot grant an inventory exception.
+  calls=$(wc -l < "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls")
+  refuse cleanup
+  [[ $(wc -l < "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls") -gt $calls ]]
+  tail -n "+$((calls + 1))" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls" > "$TEST_WORK/no-ownership.calls"
+  if grep -Eq -- '(^| )(-f|-F|-E|-X)( |$)' "$TEST_WORK/no-ownership.calls"; then
+    echo 'FAIL: missing ownership journal caused a mutation' >&2; exit 1
+  fi
+  mv "$TEST_WORK/load.saved" "$(state_dir)/load-attempted"
+  helper cleanup
+  unset MOCK_QUALIFIED_ANCHORS MOCK_KEEP_EMPTY_ANCHOR
+  printf 'PASS: retained namespace requires journaled load ownership even on completed replay\n'
+}
+case ${1:-} in
+  --anchor-custody) anchor_custody_tests; exit 0 ;;
+  ''|--readback-diagnostics) anchor_custody_tests ;;
+esac
+# Diagnostics and supported hosted-format regressions exercise the real helper
+# lifecycle. Synthetic contents remain separate from the retained hosted facts.
 diagnostic() {
   if ! grep -Fxq "ticket-transport: phase=$1 $2=false" "$TEST_WORK/log"; then
     printf 'FAIL: missing readback diagnostic phase=%s predicate=%s\n' "$1" "$2" >&2
@@ -122,11 +299,11 @@ for predicate in rule root anchors; do
   case $predicate in
     rule) MOCK_BAD_READBACK=true refuse setup ;;
     root) MOCK_LOAD_ROOT_DRIFT=true refuse setup ;;
-    anchors) MOCK_QUALIFIED_ANCHORS=true refuse setup ;;
+    anchors) MOCK_ANCHOR_INJECTION=mixed refuse setup ;;
   esac
   diagnostic setup-load "$predicate"
   if [[ $predicate == anchors ]]; then
-    shape_diagnostic 'ticket-transport: phase=setup-load shape=anchors available=true lines=2 owned-leaf=0 owned-qualified=1 remaining-before=true'
+    shape_diagnostic 'ticket-transport: phase=setup-load shape=anchors available=true lines=3 owned-leaf=1 owned-qualified=1 remaining-before=true'
   fi
   [[ ! -f $(state_dir)/enable-attempted && ! -f $MACOS_TICKET_TRANSPORT_TEST_ROOT/token ]]
   helper cleanup
@@ -150,7 +327,7 @@ for predicate in rule root anchors references status token; do
       echo 'pass out quick all' >> "$MACOS_TICKET_TRANSPORT_TEST_ROOT/root"
       refuse check
       cp "$(state_dir)/root.before" "$MACOS_TICKET_TRANSPORT_TEST_ROOT/root" ;;
-    anchors) MOCK_QUALIFIED_ANCHORS=true refuse check ;;
+    anchors) MOCK_ANCHOR_INJECTION=mixed refuse check ;;
     references)
       echo 'unsupported mock-secret reference format' >> "$MACOS_TICKET_TRANSPORT_TEST_ROOT/refs"
       refuse check
@@ -206,12 +383,12 @@ for predicate in root references status owned-empty anchors; do
   mv "$TEST_WORK/load.saved" "$(state_dir)/load-attempted"
 done
 reset_fixture; helper setup
-MOCK_KEEP_EMPTY_ANCHOR=true refuse cleanup
+MOCK_KEEP_EMPTY_ANCHOR=true MOCK_ANCHOR_INJECTION=mixed refuse cleanup
 diagnostic cleanup anchors
-shape_diagnostic 'ticket-transport: phase=cleanup shape=anchors available=true lines=2 owned-leaf=1 owned-qualified=0 remaining-before=true'
+shape_diagnostic 'ticket-transport: phase=cleanup shape=anchors available=true lines=3 owned-leaf=1 owned-qualified=1 remaining-before=true'
 [[ ! -f $(state_dir)/cleaned && ! -s $MACOS_TICKET_TRANSPORT_TEST_ROOT/rules ]]
 helper cleanup
-printf 'PASS: restoration diagnostics preserve strict sibling and empty-child refusal\n'
+printf 'PASS: restoration diagnostics preserve strict sibling and mixed empty-child alias refusal\n'
 closed_output() {
   closed_status=0
   bash "$ROOT/scripts/macos-ticket-transport.sh" "$@" 1>&- 2> "$TEST_WORK/closed-output.err" || closed_status=$?
@@ -219,6 +396,8 @@ closed_output() {
     echo 'FAIL: private PF data escaped through a failed diagnostic write' >&2; exit 1
   fi
 }
+for format in false true; do
+  export MOCK_QUALIFIED_ANCHORS=$format MOCK_KEEP_EMPTY_ANCHOR=true
 reset_fixture; helper setup
 calls=$(wc -l < "$MACOS_TICKET_TRANSPORT_TEST_ROOT/calls")
 helper check
@@ -249,6 +428,8 @@ closed_output cleanup
 preserved Enabled
 helper cleanup
 printf 'PASS: diagnostic output errors preserve readback ordering, refusal and cleanup journal\n'
+  unset MOCK_QUALIFIED_ANCHORS MOCK_KEEP_EMPTY_ANCHOR
+done
 case ${1:-} in
   --readback-diagnostics) exit 0 ;;
   '') ;;

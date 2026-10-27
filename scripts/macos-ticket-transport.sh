@@ -77,9 +77,29 @@ status_read() {
   enabled=$(awk '$1=="Status:" && ($2=="Enabled" || $2=="Disabled") {print $2}' "$state/readback")
   [[ $enabled == Enabled || $enabled == Disabled ]]
 }
+# Accept only one consistent direct-child spelling per inventory. Preserve the
+# actual sorted rows for comparison; never normalize foreign rows or aliases.
+anchors_valid() {
+  # macOS awk ignores embedded NUL bytes. Refuse them before string parsing so
+  # an apparent exact owned name cannot hide a different byte sequence.
+  local nul_count
+  nul_count=$(tr -cd '\000' < "$1" | wc -c) || return 1
+  [[ $nul_count -eq 0 ]] || return 1
+  awk '
+    {
+      leaf=$0; kind="leaf"
+      if (sub(/^com[.]apple\//, "", leaf)) kind="qualified"
+      if (leaf !~ /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/ || length(leaf)>=64 ||
+          seen[leaf]++ || (style!="" && style!=kind)) bad=1
+      style=kind
+    }
+    END {exit bad}
+  ' "$1"
+}
 anchors_read() {
   capture -a com.apple -s Anchors || return 1
-  sed 's/^[[:space:]]*//' "$state/readback" | sort > "$state/anchors.now"
+  sed 's/^[[:blank:]]*//' "$state/readback" | sort > "$state/anchors.now" || return 1
+  anchors_valid "$state/anchors.now"
 }
 load_state() {
   if ! [[ -d $state && ! -L $state && -O $state ]] || ! private_mode "$state" 700; then fail 'missing or unsafe owned state directory'; fi
@@ -96,6 +116,7 @@ load_state() {
     (.enabled == "Enabled" or .enabled == "Disabled") and
     (.anchor | type == "string" and test("^com.apple/000\\.takedown-" + $run + "-" + $attempt + "-" + $job[0:1] + "-[A-Fa-f0-9]{24}$"))
   ' "$state/state.json" > /dev/null 2>&1 || fail 'corrupt or differently bound transport custody'
+  anchors_valid "$state/anchors.before" || fail 'unsupported custody anchor inventory'
   anchor=$(jq -r .anchor "$state/state.json")
   before_enabled=$(jq -r .enabled "$state/state.json")
   for file in load-attempted enable-attempted released cleaned enable-output cancelled run-group; do
@@ -128,10 +149,29 @@ rule_readback() {
   printf 'block return out quick proto udp from any to any port = 443 label "takedown-ticket-transport"\n' > "$state/rule.expected"
   cmp -s "$state/rule.expected" "$state/rule.now"
 }
+owned_aux_empty() {
+  local category
+  # A surviving name is not evidence of an inert namespace. Refuse foreign NAT,
+  # tables or descendants, including failed/partial captures, without flushing
+  # them. The helper loads only its exact filter rule into a fresh direct child.
+  for category in nat Tables Anchors; do
+    if ! capture -a "$anchor" -s "$category" || [[ -s $state/readback ]]; then
+      # An auxiliary readback is not the parent inventory used by shape facts.
+      readback_capture_ok=false
+      return 1
+    fi
+  done
+}
+anchors_compare() {
+  local optional=$1
+  awk -v leaf="${anchor#com.apple/}" -v qualified="$anchor" -v optional="$optional" '
+    $0==leaf || $0==qualified {count++; next}
+    {print}
+    END {if(count>1 || (!optional && count!=1)) exit 1}
+  ' "$state/anchors.now" > "$state/anchors.other" && cmp -s "$state/anchors.before" "$state/anchors.other"
+}
 anchors_owned() {
-  anchors_read || return 1
-  awk -v own="${anchor#com.apple/}" '$0==own {count++; next} {print} END {if(count!=1) exit 1}' \
-    "$state/anchors.now" > "$state/anchors.other" && cmp -s "$state/anchors.before" "$state/anchors.other"
+  owned_aux_empty && anchors_read && anchors_compare 0
 }
 # Diagnose only the first failing predicate, preserving evaluation order and
 # return status. Never print command output, PF identities, or guessed formats.
@@ -186,8 +226,14 @@ readback_gate() {
 references_restored() { references && cmp -s "$state/refs.before" "$state/refs.now"; }
 status_restored() { status_read && [[ $enabled == "$before_enabled" ]]; }
 status_enabled() { status_read && [[ $enabled == Enabled ]]; }
-owned_empty() { capture -a "$anchor" -s rules && [[ ! -s $state/readback ]]; }
-anchors_restored() { anchors_read && cmp -s "$state/anchors.before" "$state/anchors.now"; }
+owned_empty() { capture -a "$anchor" -s rules && [[ ! -s $state/readback ]] && owned_aux_empty; }
+anchors_restored() {
+  anchors_read || return 1
+  if cmp -s "$state/anchors.before" "$state/anchors.now"; then return 0; fi
+  # macOS may retain this exact empty namespace after the scoped rule flush.
+  # Only journaled ownership permits it; all nonowned rows remain byte-identical.
+  [[ -f $state/load-attempted ]] && anchors_compare 1
+}
 restored() {
   readback_gate "$1" root root_unchanged &&
     readback_gate "$1" references references_restored &&
@@ -216,7 +262,7 @@ cleanup() {
   # Flush only our unique child. Do not release PF while owned rules remain.
   if [[ -f $state/load-attempted ]]; then
     pf -a "$anchor" -F rules > "$state/flush-output" 2>&1 || fail 'owned anchor cleanup failed'
-    if ! capture -a "$anchor" -s rules || [[ -s $state/readback ]]; then
+    if ! owned_empty; then
       fail 'owned anchor cleanup readback failed'
     fi
   fi
@@ -329,7 +375,7 @@ case $mode in
     anchor="com.apple/000.takedown-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${GITHUB_JOB:0:1}-${nonce:0:24}"
     [[ ${#anchor} -lt 64 ]] || fail 'job identity exceeds supported anchor length'
     while IFS= read -r sibling; do
-      [[ -z $sibling || $sibling > ${anchor#com.apple/} ]] || fail 'earlier sibling anchor may bypass transport guard'
+      [[ ${sibling#com.apple/} > ${anchor#com.apple/} ]] || fail 'earlier sibling anchor may bypass transport guard'
     done < "$state/anchors.before"
     if ! capture -a "$anchor" -s rules || [[ -s $state/readback ]]; then
       fail 'owned anchor collision'
