@@ -3,8 +3,16 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 export NOTARY_CHECKPOINT_HOOK="$ROOT/scripts/apple-checkpoint.sh"
 status=0
+if [[ -e $NOTARY_EVIDENCE_DIR/acceptance-state.json || -L $NOTARY_EVIDENCE_DIR/acceptance-state.json ]]; then
+  if ! [[ -f $NOTARY_EVIDENCE_DIR/acceptance-state.json && ! -L $NOTARY_EVIDENCE_DIR/acceptance-state.json &&
+     -f $NOTARY_EVIDENCE_DIR/final/SHA256SUMS ]] ||
+    ! bash "$ROOT/scripts/apple-stages-verified.sh" "$NOTARY_EVIDENCE_DIR"; then
+      echo 'bound final acceptance requires retained finals and verified signer stages; no repack permitted' >&2
+      exit 1
+  fi
+fi
 packages="$ROOT/dist/packages/darwin-$NOTARY_ARCH-release"
-if [[ -f $NOTARY_EVIDENCE_DIR/acceptance.json && -f $NOTARY_EVIDENCE_DIR/final/SHA256SUMS ]] &&
+if [[ ( -f $NOTARY_EVIDENCE_DIR/acceptance.json || -f $NOTARY_EVIDENCE_DIR/acceptance-state.json ) && -f $NOTARY_EVIDENCE_DIR/final/SHA256SUMS ]] &&
   bash "$ROOT/scripts/apple-stages-verified.sh" "$NOTARY_EVIDENCE_DIR"; then
   # Successful architectures retain their final ZIP bytes across continuations,
   # including a publication retry. Repacking must never mutate a reserved asset.
@@ -18,10 +26,16 @@ if [[ $status == 75 ]]; then
   exit 0
 fi
 [[ $status == 0 ]] || exit "$status"
-bash "$ROOT/scripts/verify-macos-package.sh"
 mkdir -p "$NOTARY_EVIDENCE_DIR/final"
 for file in "$packages/"*.zip "$packages/"*.dmg "$packages/SHA256SUMS"; do
   retained="$NOTARY_EVIDENCE_DIR/final/${file##*/}"
   if [[ -e $retained ]]; then cmp -s "$file" "$retained" || { echo 'final candidate bytes changed' >&2; exit 1; }; else cp "$file" "$retained"; fi
 done
+status=0
+bash "$ROOT/scripts/verify-macos-package.sh" || status=$?
+if [[ $status == 75 ]]; then
+  printf 'Final Apple acceptance pending; retained bytes and persistent budget will resume.\n' >> "${GITHUB_STEP_SUMMARY:?}"
+  exit 0
+fi
+[[ $status == 0 ]] || exit "$status"
 bash "$NOTARY_CHECKPOINT_HOOK" "$NOTARY_EVIDENCE_DIR"

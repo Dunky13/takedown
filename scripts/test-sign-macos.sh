@@ -16,6 +16,7 @@ trap cleanup_tests EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 mkdir "$TEST_WORK/tools" "$TEST_WORK/scratch"
+export MOCK_NATIVE_OUTPUT="$ROOT/scripts/testdata/stapler-cloudkit-lost.txt"
 export REAL_OPENSSL REAL_DITTO REAL_PLUTIL REAL_RM
 # shellcheck source=scripts/macos-certificate-import.sh
 source "$ROOT/scripts/macos-certificate-import.sh"
@@ -171,7 +172,7 @@ other=87654321-1234-1234-1234-123456789abc
 if [[ $1 == --find ]]; then echo "/fixture/$2"; exit 0; fi
 if [[ $1 == stapler ]]; then
   printf '%s\n' "$2" >> "$MOCK_STATE/tickets"
-  if [[ $2 == validate && $MOCK_SCENARIO == validation-transient ]]; then echo 'CloudKit network connection lost' >&2; echo 'MUST-NOT-RETAIN fixture-p12-password' >&2; exit 68; fi
+  if [[ $2 == validate && $MOCK_SCENARIO == validation-transient ]]; then cat "$MOCK_NATIVE_OUTPUT" >&2; echo 'MUST-NOT-RETAIN fixture-p12-password' >&2; exit 68; fi
   if [[ $2 == validate && $MOCK_SCENARIO == validation-mutate-archive ]]; then printf 'changed\n' >> "$NOTARY_EVIDENCE_DIR/app/stapled-app.zip"; fi
   if [[ $2 == staple && $MOCK_SCENARIO == ticket-transient ]]; then echo 'CloudKit network connection lost' >&2; exit 68; fi
   [[ $2 != staple || $MOCK_SCENARIO != staple-failure ]] || exit 68
@@ -307,6 +308,21 @@ CloudKit network connection lost fixture-p12-password|unclassified
 CASES
   printf 'CloudKit network connection lost\nInvalid signature\n' > "$TEST_WORK/ticket-diagnostic"
   [[ $(macos_ticket_failure_class "$TEST_WORK/ticket-diagnostic" 68) == unclassified ]]
+  [[ $(macos_ticket_failure_class "$MOCK_NATIVE_OUTPUT" 68) == cloudkit-transport ]]
+  [[ $(macos_ticket_failure_class "$MOCK_NATIVE_OUTPUT" 1) == unclassified ]]
+  for message in 'Invalid ticket' 'Rejected' 'Signature mismatch' 'Ticket not found' 'No ticket' 'Could not find ticket' 'not stapled' 'not notarized' 'revoked'; do
+    cat "$MOCK_NATIVE_OUTPUT" > "$TEST_WORK/ticket-diagnostic"
+    printf '%s\n' "$message" >> "$TEST_WORK/ticket-diagnostic"
+    [[ $(macos_ticket_failure_class "$TEST_WORK/ticket-diagnostic" 68) == unclassified ]]
+  done
+  for message in '/records/lookup.evil' '/records/lookup?other=1' 'https://elsewhere.invalid/' 'Code=-1001'; do
+    case $message in
+      Code=*) sed "s/Code=-1005/$message/g" "$MOCK_NATIVE_OUTPUT" ;;
+      /records/*) sed "s@/records/lookup,@$message,@g" "$MOCK_NATIVE_OUTPUT" ;;
+      *) sed "s@https://api.apple-cloudkit.com/@$message@g" "$MOCK_NATIVE_OUTPUT" ;;
+    esac > "$TEST_WORK/ticket-diagnostic"
+    [[ $(macos_ticket_failure_class "$TEST_WORK/ticket-diagnostic" 68) == unclassified ]]
+  done
   echo 'PASS: ticket classification uses safe allowlisted constants; exit 68, generic transport and contradictory diagnostics are terminal'
 
   # Generate the actual verified -> terminal seam, then remove only extension
