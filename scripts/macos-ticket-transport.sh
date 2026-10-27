@@ -154,7 +154,9 @@ cleanup() {
   # Flush only our unique child. Do not release PF while owned rules remain.
   if [[ -f $state/load-attempted ]]; then
     pf -a "$anchor" -F rules > "$state/flush-output" 2>&1 || fail 'owned anchor cleanup failed'
-    capture -a "$anchor" -s rules && [[ ! -s $state/readback ]] || fail 'owned anchor cleanup readback failed'
+    if ! capture -a "$anchor" -s rules || [[ -s $state/readback ]]; then
+      fail 'owned anchor cleanup readback failed'
+    fi
   fi
   if [[ -f $state/enable-attempted && ! -f $state/released ]]; then
     owned_token || fail 'owned enable token unavailable; no guessed reference released'
@@ -162,7 +164,9 @@ cleanup() {
     # Accept that only when the complete original references/status read back.
     references || fail 'enable-reference readback failed'
     if cmp -s "$state/refs.before" "$state/refs.now"; then
-      status_read && [[ $enabled == "$before_enabled" ]] || fail 'released reference status mismatch'
+      if ! status_read || [[ $enabled != "$before_enabled" ]]; then
+        fail 'released reference status mismatch'
+      fi
     else
       references_owned || fail 'enable-reference custody changed; no reference released'
       pf -X "$token" > "$state/release-output" 2>&1 || fail 'owned reference release failed'
@@ -176,9 +180,45 @@ cleanup() {
 check() {
   load_state
   [[ -f $state/load-attempted && -f $state/enable-attempted && ! -e $state/released && ! -e $state/cleaned ]] || fail 'transport guard is not active'
-  owned_token && root_unchanged && rule_readback && anchors_owned && references_owned &&
-    status_read && [[ $enabled == Enabled ]] || fail 'active transport readback failed'
+  if ! owned_token || ! root_unchanged || ! rule_readback || ! anchors_owned ||
+     ! references_owned || ! status_read || [[ $enabled != Enabled ]]; then
+    fail 'active transport readback failed'
+  fi
   printf 'ticket-transport: active readback verified\n'
+}
+# Invoked by the EXIT trap after the guarded command or a handled signal.
+finish_run() {
+  result=$?
+  trap - EXIT INT TERM
+  if [[ -n $child ]]; then
+    if [[ $result != 0 ]] || owned_group_live "$child"; then
+      : > "$state/cancelled"
+      [[ $result != 0 ]] || result=1
+      # The child verifies it owns this group before executing release
+      # code. Signal every wrapper/native descendant together; traps may
+      # then finish credential and mount cleanup before PF is released.
+      kill -TERM -- "-$child" 2>/dev/null || true
+      for ((drain=0; drain<150; drain++)); do
+        owned_group_live "$child" || break
+        sleep 0.1
+      done
+      if owned_group_live "$child"; then
+        result=1
+        kill -KILL -- "-$child" 2>/dev/null || true
+        for ((drain=0; drain<50; drain++)); do
+          owned_group_live "$child" || break
+          sleep 0.1
+        done
+      fi
+    fi
+    wait "$child" 2>/dev/null || true
+    if owned_group_live "$child"; then
+      printf 'ticket-transport: owned command did not stop; no teardown claimed\n' >&2
+      exit 1
+    fi
+  fi
+  bash "$0" cleanup || result=1
+  exit "$result"
 }
 case $mode in
   setup)
@@ -228,7 +268,9 @@ case $mode in
     while IFS= read -r sibling; do
       [[ -z $sibling || $sibling > ${anchor#com.apple/} ]] || fail 'earlier sibling anchor may bypass transport guard'
     done < "$state/anchors.before"
-    capture -a "$anchor" -s rules && [[ ! -s $state/readback ]] || fail 'owned anchor collision'
+    if ! capture -a "$anchor" -s rules || [[ -s $state/readback ]]; then
+      fail 'owned anchor collision'
+    fi
     jq -n --arg repo "$GITHUB_REPOSITORY" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
       --arg job "$GITHUB_JOB" --arg sha "$GITHUB_SHA" --arg anchor "$anchor" --arg enabled "$enabled" \
       --arg root "$(hash "$state/root.before")" --arg refs "$(hash "$state/refs.before")" --arg anchors "$(hash "$state/anchors.before")" \
@@ -250,42 +292,7 @@ case $mode in
     [[ $# -gt 0 ]] || fail 'guarded command required'
     check
     child=''
-    # Invoked by the EXIT trap after the guarded command or a handled signal.
-    # shellcheck disable=SC2329
-    finish() {
-      result=$?
-      trap - EXIT INT TERM
-      if [[ -n $child ]]; then
-        if [[ $result != 0 ]] || owned_group_live "$child"; then
-          : > "$state/cancelled"
-          [[ $result != 0 ]] || result=1
-          # The child verifies it owns this group before executing release
-          # code. Signal every wrapper/native descendant together; traps may
-          # then finish credential and mount cleanup before PF is released.
-          kill -TERM -- "-$child" 2>/dev/null || true
-          for ((drain=0; drain<150; drain++)); do
-            owned_group_live "$child" || break
-            sleep 0.1
-          done
-          if owned_group_live "$child"; then
-            result=1
-            kill -KILL -- "-$child" 2>/dev/null || true
-            for ((drain=0; drain<50; drain++)); do
-              owned_group_live "$child" || break
-              sleep 0.1
-            done
-          fi
-        fi
-        wait "$child" 2>/dev/null || true
-        if owned_group_live "$child"; then
-          printf 'ticket-transport: owned command did not stop; no teardown claimed\n' >&2
-          exit 1
-        fi
-      fi
-      bash "$0" cleanup || result=1
-      exit "$result"
-    }
-    trap finish EXIT
+    trap finish_run EXIT
     # Keep a startup signal from landing between spawn and PID custody.
     cancel_status=0
     trap 'cancel_status=130; : > "$state/cancelled"' INT
