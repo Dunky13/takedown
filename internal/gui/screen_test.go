@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 	"github.com/Dunky13/takedown/internal/app"
@@ -231,7 +232,7 @@ func TestScreenRendersProgressAndSpaceWarning(t *testing.T) {
 	if s.destination.Disabled() || s.source.Disabled() || !s.cancelButton.Disabled() {
 		t.Fatal("stopped job controls did not recover")
 	}
-	s.tabs.SelectIndex(1)
+	s.tabs.Select(s.transfersTab)
 	captureScreen(t, s, "gui-preview.png")
 }
 
@@ -300,7 +301,7 @@ func TestDiscoveryRejectsLateResultAfterSourceEdit(t *testing.T) {
 
 func TestSourceOnboardingAndDisclosure(t *testing.T) {
 	s, _ := newTestScreen(t, nil)
-	s.tabs.SelectIndex(2)
+	s.tabs.Select(s.sourceTab)
 	if !s.driveOptions.Visible() || s.portabilityOptions.Visible() || !strings.Contains(s.disclosure.Text, "all files in your Google Drive") {
 		t.Fatal("Drive setup or permission breadth missing")
 	}
@@ -310,9 +311,9 @@ func TestSourceOnboardingAndDisclosure(t *testing.T) {
 		}
 	}
 	captureScreen(t, s, "gui-source-drive.png")
-	s.sourceTabs.SelectIndex(1)
+	s.tabs.Select(s.authorizeTab)
 	captureScreen(t, s, "gui-source-drive-access.png")
-	s.sourceTabs.SelectIndex(0)
+	s.tabs.Select(s.sourceTab)
 	s.source.SetSelected(portabilitySourceLabel)
 	s.resources.SetText("myactivity.search, myactivity.youtube")
 	if s.driveOptions.Visible() || !s.portabilityOptions.Visible() {
@@ -324,10 +325,13 @@ func TestSourceOnboardingAndDisclosure(t *testing.T) {
 	if s.create.Text != "Create Data Portability export" {
 		t.Fatalf("export action = %q", s.create.Text)
 	}
+	if !s.portabilityPrepare.Visible() || s.drivePrepare.Visible() || s.signInHelp.Text == "" || strings.Contains(s.signInHelp.Text, "Drive API") {
+		t.Fatal("step 2 and step 4 setup did not follow the Data Portability source")
+	}
 	captureScreen(t, s, "gui-source-portability.png")
-	s.sourceTabs.SelectIndex(1)
+	s.tabs.Select(s.authorizeTab)
 	captureScreen(t, s, "gui-source-portability-access.png")
-	s.sourceTabs.SelectIndex(0)
+	s.tabs.Select(s.sourceTab)
 	cfg, err := s.preferences()
 	if err != nil || len(cfg.PortabilityResources) != 2 {
 		t.Fatalf("resource groups = %v, %v", cfg.PortabilityResources, err)
@@ -496,7 +500,11 @@ func TestCreateExportIsExplicitAndDoesNotStartWatching(t *testing.T) {
 			}
 			account.create = func(context.Context) (string, error) { calls.Add(1); return message, nil }
 			account.list = func(context.Context) ([]model.Export, error) { discoveries.Add(1); return nil, nil }
-			test.Tap(s.create)
+			if provider == "drive" {
+				test.Tap(s.openTakeout)
+			} else {
+				test.Tap(s.create)
+			}
 			awaitJob(t, s)
 			if calls.Load() != 1 || discoveries.Load() != 0 || s.watching || s.busy || s.status.Text != message {
 				t.Fatal("export creation did not remain one explicit source action")
@@ -678,12 +686,28 @@ func TestWatchSelectedRejectsStaleDiscovery(t *testing.T) {
 	}
 }
 
+// assertWindowFits checks the whole layout fits and that the buttons on the
+// selected step, plus the footer, are not clipped. Buttons on other steps or
+// hidden by the source are skipped; assertStepsFit visits every step.
 func assertWindowFits(t *testing.T, s *screen, size fyne.Size) {
 	t.Helper()
 	if minimum := s.content.MinSize(); minimum.Width > size.Width || minimum.Height > size.Height {
 		t.Fatalf("content minimum %v exceeds requested window %v", minimum, size)
 	}
-	for _, button := range []*widget.Button{s.authorize, s.find, s.disconnect, s.pause, s.resume, s.cancelButton} {
+	pages := map[*widget.Button]*container.TabItem{s.authorize: s.authorizeTab, s.disconnect: s.authorizeTab, s.checkAccess: s.authorizeTab, s.find: s.archivesTab, s.downloadButton: s.archivesTab, s.pause: s.transfersTab, s.resume: s.transfersTab}
+	if s.selectedSource() == "drive" {
+		pages[s.openTakeout], pages[s.folderBrowse] = s.sourceTab, s.archivesTab
+	}
+	buttons := []*widget.Button{s.cancelButton, s.back, s.next} // the footer shows on every tab
+	for button, page := range pages {
+		if page == s.tabs.Selected() {
+			buttons = append(buttons, button)
+		}
+	}
+	for _, button := range buttons {
+		if !button.Visible() {
+			continue
+		}
 		position := fyne.CurrentApp().Driver().AbsolutePositionForObject(button)
 		if position.X < 0 || position.Y < 0 || position.X+button.Size().Width > size.Width || position.Y+button.Size().Height > size.Height || button.Size().Width < button.MinSize().Width {
 			t.Fatalf("button %q is clipped at %v size %v, minimum %v in %v", button.Text, position, button.Size(), button.MinSize(), size)
@@ -691,19 +715,45 @@ func assertWindowFits(t *testing.T, s *screen, size fyne.Size) {
 	}
 }
 
-func TestOnboardingFitsDesktopAndSmallerWindow(t *testing.T) {
-	s, _ := newTestScreen(t, func(cfg *config.Settings) { cfg.OAuthClientFile = "" })
-	if s.tabs.SelectedIndex() != 2 {
-		t.Fatal("unconfigured source did not open onboarding")
+// assertStepsFit walks the four guide steps, then restores the selected tab.
+func assertStepsFit(t *testing.T, s *screen, size fyne.Size) {
+	t.Helper()
+	selected := s.tabs.Selected()
+	for _, busy := range []bool{false, true} { // Stop joins Back and Next only while busy
+		s.setBusy(busy)
+		for _, step := range s.guide {
+			s.tabs.Select(step)
+			s.content.Refresh()
+			assertWindowFits(t, s, size)
+		}
 	}
-	for _, viewport := range []struct {
-		size fyne.Size
-		name string
-	}{{fyne.NewSize(960, 760), "gui-onboarding-960.png"}, {fyne.NewSize(800, 640), "gui-onboarding-800.png"}} {
-		s.w.Resize(viewport.size)
-		s.content.Refresh()
-		assertWindowFits(t, s, viewport.size)
-		captureScreen(t, s, viewport.name)
+	s.setBusy(false)
+	s.tabs.Select(selected)
+}
+
+func TestOnboardingFitsDesktopAndSmallerWindow(t *testing.T) {
+	for _, provider := range []string{"drive", "portability"} {
+		t.Run(provider, func(t *testing.T) {
+			s, _ := newTestScreen(t, func(cfg *config.Settings) {
+				cfg.OAuthClientFile = ""
+				cfg.Source = provider
+			})
+			if s.tabs.Selected() != s.sourceTab {
+				t.Fatal("unconfigured source did not open onboarding")
+			}
+			for _, viewport := range []struct {
+				size fyne.Size
+				name string
+			}{{fyne.NewSize(960, 760), "gui-onboarding-960.png"}, {fyne.NewSize(800, 640), "gui-onboarding-800.png"}} {
+				s.w.Resize(viewport.size)
+				s.content.Refresh()
+				assertWindowFits(t, s, viewport.size)
+				if provider == "drive" {
+					captureScreen(t, s, viewport.name)
+				}
+				assertStepsFit(t, s, viewport.size)
+			}
+		})
 	}
 }
 
@@ -742,9 +792,11 @@ func TestLongDriveIdentityAndFilenameWrapWithoutExposingIDs(t *testing.T) {
 			if strings.Contains(item.Text, opaqueID) {
 				t.Fatal("discovery exposed an opaque identity")
 			}
-		case *widget.Label:
-			if strings.Contains(item.Text, filename) {
-				nameLabel = item
+		case *fyne.Container: // a part row: indented check beside the wrapping file name
+			for _, child := range item.Objects {
+				if label, ok := child.(*widget.Label); ok && strings.Contains(label.Text, filename) {
+					nameLabel = label
+				}
 			}
 		}
 	}
@@ -756,11 +808,11 @@ func TestLongDriveIdentityAndFilenameWrapWithoutExposingIDs(t *testing.T) {
 		suffix string
 	}{{fyne.NewSize(960, 760), "960"}, {fyne.NewSize(800, 640), "800"}} {
 		s.w.Resize(viewport.size)
-		s.tabs.SelectIndex(0)
+		s.tabs.Select(s.archivesTab)
 		s.content.Refresh()
 		assertWindowFits(t, s, viewport.size)
 		captureScreen(t, s, "gui-long-drive-archives-"+viewport.suffix+".png")
-		s.tabs.SelectIndex(1)
+		s.tabs.Select(s.transfersTab)
 		s.onEvent(events.Event{Kind: events.Progress, PartKey: part.Key(), Filename: filename, Bytes: 50_000_000, Total: part.Size, BytesPerSecond: 10_000_000})
 		s.content.Refresh()
 		assertWindowFits(t, s, viewport.size)
@@ -786,8 +838,7 @@ func TestDisclosureScrollDoesNotPaintOverFixedControls(t *testing.T) {
 		cfg.Source = "portability"
 		cfg.PortabilityResources = []string{"myactivity.search", "myactivity.youtube"}
 	})
-	s.tabs.SelectIndex(2)
-	s.sourceTabs.SelectIndex(1)
+	s.tabs.Select(s.authorizeTab)
 	if !strings.Contains(s.disclosure.Text, "Data Portability archives require encryption in transit and at rest") {
 		t.Fatal("scroll clipping regression does not cover the encryption disclosure")
 	}
@@ -831,6 +882,10 @@ func TestWatchIntervalAndResourceValidation(t *testing.T) {
 		t.Fatalf("Drive minimum rejected: %v", err)
 	}
 	s.source.SetSelected(portabilitySourceLabel)
+	if s.pollInterval.Text != "300" {
+		t.Fatalf("switching source kept interval %q below the Data Portability minimum", s.pollInterval.Text)
+	}
+	s.pollInterval.SetText("299")
 	if _, err := s.preferences(); err == nil {
 		t.Fatal("Data Portability interval below 300 seconds accepted")
 	}

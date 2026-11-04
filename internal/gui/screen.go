@@ -9,12 +9,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/Dunky13/takedown/internal/app"
@@ -49,26 +51,40 @@ type screen struct {
 	content                                                    fyne.CanvasObject
 	destination, email, password, buffer, sshKey, knownHosts   *widget.Entry
 	oauthClient, driveFolder, resources, pollInterval          *widget.Entry
-	source, workers                                            *widget.Select
+	source                                                     *widget.RadioGroup
+	workers                                                    *widget.Select
 	partByPart, unknown, watchSelected                         *widget.Check
 	status, banner, sourceSummary, sourceHelp, disclosure      *widget.Label
+	signInHelp                                                 *widget.Label
+	sourceBlurb, selectionSummary, portabilityWarning          *widget.Label
+	driveDocLink, portabilityDocLink                           *widget.Hyperlink
 	progress                                                   *widget.ProgressBar
 	exports                                                    *fyne.Container
 	transferList                                               *widget.List
 	transfers                                                  []events.Event
-	selected                                                   map[string]bool
+	selected, skippedParts, doneParts                          map[string]bool
+	selectionChecks                                            []*widget.Check
+	setAllParts                                                []func(bool)
 	ready                                                      []model.Export
 	buttons                                                    []*widget.Button
 	authorize, disconnect, create, find, watch, downloadButton *widget.Button
 	pause, resume, cancelButton                                *widget.Button
+	openTakeout, back, next                                    *widget.Button
 	driveOptions, portabilityOptions                           fyne.CanvasObject
+	drivePrepare, portabilityPrepare                           fyne.CanvasObject
+	storageDetails                                             *widget.Accordion
+	selectionRow                                               *fyne.Container
+	watchDialog                                                *dialog.CustomDialog
 	jobCancel                                                  context.CancelFunc
 	jobDone                                                    <-chan struct{}
 	controlPending                                             bool
 	afterControl                                               func()
 	busy, watching                                             bool
 	stopEvents                                                 func()
-	tabs, sourceTabs                                           *container.AppTabs
+	tabs                                                       *container.AppTabs
+	sourceTab, authorizeTab, destinationTab, archivesTab       *container.TabItem
+	transfersTab, jobsTab, diagnosticsTab                      *container.TabItem
+	guide                                                      []*container.TabItem
 	jobGeneration                                              uint64
 	sourceRevision                                             uint64
 	discovery                                                  sourceSnapshot
@@ -85,7 +101,7 @@ type screen struct {
 
 func newScreen(parent context.Context, desktop fyne.App, w fyne.Window, a *app.App) *screen {
 	ctx, cancel := context.WithCancel(parent)
-	s := &screen{ctx: ctx, cancel: cancel, w: w, a: a, selected: make(map[string]bool)}
+	s := &screen{ctx: ctx, cancel: cancel, w: w, a: a, selected: make(map[string]bool), skippedParts: make(map[string]bool)}
 	s.destination = widget.NewEntry()
 	s.destination.SetText(a.Settings.Destination)
 	s.destination.SetPlaceHolder("Folder, Windows UNC, smb://user@host/share/path or sftp://user@host/path")
@@ -106,7 +122,7 @@ func newScreen(parent context.Context, desktop fyne.App, w fyne.Window, a *app.A
 	s.partByPart = widget.NewCheck("Download one part at a time", nil)
 	s.unknown = widget.NewCheck("Allow SFTP without free-space reporting", nil)
 	s.unknown.SetChecked(a.Settings.AllowUnknownSpace)
-	s.status = wrappedLabel("Set up a source, authorize in your browser, then discover archives.")
+	s.status = wrappedLabel("Follow the steps on the left: choose data, sign in, pick a destination, then download.")
 	s.banner = wrappedLabel("")
 	s.banner.Importance = widget.WarningImportance
 	s.banner.Hide()
@@ -124,9 +140,13 @@ func newScreen(parent context.Context, desktop fyne.App, w fyne.Window, a *app.A
 		}
 	})
 	s.authorize = widget.NewButtonWithIcon("Authorize in browser", theme.LoginIcon(), s.login)
+	s.authorize.Importance = widget.HighImportance
 	s.disconnect = widget.NewButton("Remove local token", s.forget)
+	s.disconnect.Importance = widget.LowImportance
 	s.find = widget.NewButtonWithIcon("Discover archives", theme.ViewRefreshIcon(), s.discover)
+	s.find.Importance = widget.HighImportance
 	s.downloadButton = widget.NewButtonWithIcon("Download selected", theme.DownloadIcon(), s.download)
+	s.downloadButton.Importance = widget.HighImportance
 	s.watch = widget.NewButtonWithIcon("Start watching", theme.MediaPlayIcon(), s.startWatch)
 	s.watchSelected = widget.NewCheck("Only watch selected exports", nil)
 	save := widget.NewButtonWithIcon("Save preferences", theme.DocumentSaveIcon(), func() {
@@ -136,6 +156,7 @@ func newScreen(parent context.Context, desktop fyne.App, w fyne.Window, a *app.A
 			}
 		}, nil)
 	})
+	save.Importance = widget.LowImportance
 	folder := widget.NewButtonWithIcon("Browse…", theme.FolderOpenIcon(), func() {
 		if s.busy {
 			return
@@ -159,28 +180,42 @@ func newScreen(parent context.Context, desktop fyne.App, w fyne.Window, a *app.A
 		}
 	})
 	s.buttons = []*widget.Button{s.authorize, s.find, s.disconnect, save, folder, s.downloadButton, s.watch}
-	sourceContent := s.sourceContent()
-	destination := container.NewVBox(
-		widget.NewForm(widget.NewFormItem("Network storage password", s.password)),
-		wrappedLabel("Used only for SMB or SFTP storage. It is not a Google password and is not saved in preferences."),
-		s.partByPart,
-		widget.NewForm(widget.NewFormItem("Free-space buffer (bytes)", s.buffer), widget.NewFormItem("Concurrent parts", s.workers), widget.NewFormItem("SFTP private key", s.sshKey), widget.NewFormItem("SFTP known_hosts", s.knownHosts), widget.NewFormItem("Free-space fallback", s.unknown)),
-		wrappedLabel("Without free-space reporting, the space guard cannot protect the SFTP destination."),
-	)
-	exportScroll := container.NewVScroll(s.exports)
-	exportScroll.SetMinSize(fyne.NewSize(300, 150))
-	archives := container.NewBorder(nil, container.NewVBox(s.watchSelected, container.NewHBox(s.downloadButton, s.watch), wrappedLabel("Watching downloads ready archives from this source, including new exports. It does not create or schedule exports.")), nil, nil, exportScroll)
-	transfers := container.NewBorder(nil, s.progress, nil, nil, s.transferList)
-	s.tabs = container.NewAppTabs(container.NewTabItem("Archives", archives), container.NewTabItem("Transfers", transfers), container.NewTabItem("Source", sourceContent), container.NewTabItem("Destination", container.NewVScroll(destination)), container.NewTabItem("Jobs", s.jobsContent()), container.NewTabItem("Diagnostics", s.diagnosticsContent()))
+	s.sourceTab = container.NewTabItem("1. Choose data", s.sourceContent())
+	s.authorizeTab = container.NewTabItem("2. Sign in", s.authorizeContent())
+	s.destinationTab = container.NewTabItem("3. Save to", s.destinationContent(folder))
+	s.archivesTab = container.NewTabItem("4. Download", s.archivesContent())
+	s.transfersTab = container.NewTabItem("Transfers", container.NewBorder(nil, container.NewVBox(container.NewHBox(s.pause, s.resume), s.progress), nil, nil, s.transferList))
+	s.jobsTab = container.NewTabItem("Jobs", s.jobsContent())
+	s.diagnosticsTab = container.NewTabItem("Diagnostics", s.diagnosticsContent())
+	s.guide = []*container.TabItem{s.sourceTab, s.authorizeTab, s.destinationTab, s.archivesTab}
+	s.back = widget.NewButton("", func() { s.stepBy(-1) })
+	s.next = widget.NewButton("", func() { s.stepBy(1) })
+	s.tabs = container.NewAppTabs(s.sourceTab, s.authorizeTab, s.destinationTab, s.archivesTab, s.transfersTab, s.jobsTab, s.diagnosticsTab)
+	s.tabs.SetTabLocation(container.TabLocationLeading)
+	s.tabs.OnSelected = func(*container.TabItem) { s.syncGuide() }
 	s.content = container.NewBorder(
-		container.NewVBox(widget.NewLabelWithStyle("takedown", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), s.banner, s.sourceSummary, container.NewHBox(s.authorize, s.find, s.disconnect), container.NewBorder(nil, nil, widget.NewLabel("Save archives to"), folder, s.destination), widget.NewSeparator()),
-		container.NewVBox(widget.NewSeparator(), s.status, container.NewHBox(save, s.pause, s.resume, s.cancelButton)), nil, nil, s.tabs,
+		container.NewVBox(widget.NewLabelWithStyle("takedown", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), s.banner, s.sourceSummary, widget.NewSeparator()),
+		container.NewVBox(widget.NewSeparator(), s.status, container.NewHBox(save, layout.NewSpacer(), s.cancelButton, s.back, s.next)), nil, nil, s.tabs,
 	)
+	s.updateSourceLabels()
+	s.destination.OnChanged = func(text string) {
+		s.updateSummary()
+		if strings.Contains(text, "://") {
+			s.storageDetails.Open(0)
+		}
+		// What is already downloaded depends on the destination, so re-derive the ticks.
+		if s.discoveryBound && !s.busy {
+			s.showExports(s.discovery)
+		}
+	}
 	s.setBusy(false)
 	s.bindSourceChanges()
 	if a.Settings.OAuthClientFile == "" {
-		s.tabs.SelectIndex(2)
+		s.tabs.Select(s.sourceTab)
+	} else {
+		s.tabs.Select(s.archivesTab)
 	}
+	s.syncGuide()
 	ch, stop := a.Bus.Subscribe(512)
 	s.stopEvents = stop
 	s.wg.Add(1)
@@ -243,8 +278,13 @@ func (s *screen) invalidateExports() {
 	s.selected = make(map[string]bool)
 	s.discoveryBound = false
 	s.discovery = sourceSnapshot{}
+	s.skippedParts = make(map[string]bool)
+	s.doneParts = nil
+	s.selectionChecks = nil
+	s.setAllParts = nil
 	s.exports.RemoveAll()
 	s.exports.Add(wrappedLabel("Discover archives for the current source and authorization before downloading."))
+	s.updateSelectionSummary()
 }
 
 func (s *screen) setBusy(busy bool) {
@@ -263,11 +303,11 @@ func (s *screen) setBusy(busy bool) {
 			e.Enable()
 		}
 	}
-	for _, selectBox := range []*widget.Select{s.source, s.workers} {
+	for _, choice := range []fyne.Disableable{s.source, s.workers} {
 		if busy {
-			selectBox.Disable()
+			choice.Disable()
 		} else {
-			selectBox.Enable()
+			choice.Enable()
 		}
 	}
 	for _, check := range []*widget.Check{s.partByPart, s.unknown, s.watchSelected} {
@@ -289,18 +329,18 @@ func (s *screen) setBusy(busy bool) {
 	if s.startupUI != nil {
 		s.startupUI.setBusy(busy)
 	}
-	for _, obj := range s.exports.Objects {
-		if check, ok := obj.(*widget.Check); ok {
-			if busy {
-				check.Disable()
-			} else {
-				check.Enable()
-			}
+	for _, check := range s.selectionChecks {
+		if busy {
+			check.Disable()
+		} else {
+			check.Enable()
 		}
 	}
 	if busy {
+		s.cancelButton.Show()
 		s.cancelButton.Enable()
 	} else {
+		s.cancelButton.Hide()
 		s.watching = false
 		s.pause.Disable()
 		s.resume.Disable()
@@ -409,39 +449,12 @@ func (s *screen) discover() {
 		s.ready = exports
 		s.discovery = binding
 		s.discoveryBound = true
-		s.selected = make(map[string]bool)
-		s.exports.RemoveAll()
+		s.showExports(binding)
 		if len(exports) == 0 {
-			s.exports.Add(wrappedLabel("No ready archives in this source. Create an export, then discover again or start watching."))
 			return
 		}
-		for _, export := range exports {
-			var total int64
-			for _, part := range export.Parts {
-				total += part.Size
-			}
-			s.selected[export.ID] = true
-			created := "date unavailable"
-			if !export.CreatedAt.IsZero() {
-				created = export.CreatedAt.Format("2006-01-02")
-			}
-			partCount := fmt.Sprintf("%d parts", len(export.Parts))
-			if len(export.Parts) == 1 {
-				partCount = "1 part"
-			}
-			check := widget.NewCheck(fmt.Sprintf("%s  ·  %s  ·  %.2f GB", created, partCount, float64(total)/1e9), func(value bool) {
-				if !s.busy && binding.matches(s) {
-					s.selected[export.ID] = value
-				}
-			})
-			check.SetChecked(true)
-			s.exports.Add(check)
-			for _, part := range export.Parts {
-				s.exports.Add(archiveLabel(fmt.Sprintf("%s  (%d bytes)", part.Filename, part.Size)))
-			}
-		}
-		s.tabs.SelectIndex(0)
-		s.status.SetText("Select exports, confirm the destination, and start downloading.")
+		s.tabs.Select(s.archivesTab)
+		s.status.SetText("Choose the archive files to download, then select Download selected.")
 	}, nil)
 }
 
@@ -466,14 +479,9 @@ func (s *screen) download() {
 	if !s.requireDiscovery() {
 		return
 	}
-	var parts []model.Part
-	for _, export := range s.ready {
-		if s.selected[export.ID] {
-			parts = append(parts, export.Parts...)
-		}
-	}
+	parts := s.selectedParts()
 	if len(parts) == 0 {
-		dialog.ShowInformation("Select an export", "Discover archives and select at least one export.", s.w)
+		dialog.ShowInformation("Select an export", "Discover archives and select at least one archive file.", s.w)
 		return
 	}
 	opts := app.DownloadOptions{Destination: s.a.Settings.Destination, PartByPart: s.partByPart.Checked, StoragePassword: s.password.Text}
@@ -489,7 +497,7 @@ func (s *screen) download() {
 			s.showError(err)
 		}
 	}, func() {
-		s.tabs.SelectIndex(1)
+		s.tabs.Select(s.transfersTab)
 		s.pause.Enable()
 		s.resume.Enable()
 	})

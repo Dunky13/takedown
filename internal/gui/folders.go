@@ -108,7 +108,7 @@ func (p *folderPicker) load() {
 		}
 		p.rows.RemoveAll()
 		if err != nil {
-			p.rows.Add(archiveLabel("Could not list folders. " + err.Error() + "\nClose this picker and check authorization or use the advanced folder ID field."))
+			p.rows.Add(archiveLabel("Could not list folders. " + err.Error() + "\nClose this picker and check authorization or paste the folder ID into the Drive archive folder field."))
 		} else {
 			for _, folder := range folders {
 				open := widget.NewButton("Open", func() {

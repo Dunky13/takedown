@@ -245,7 +245,7 @@ func (m *Manager) CreateExport(ctx context.Context) (string, error) {
 		if err = m.opts.OpenURL(TakeoutURL()); err != nil {
 			return "", errors.New("cannot open Google Takeout; open the Takeout settings URL in your browser")
 		}
-		return "Review products in Google Takeout, select Add to Drive and exports every 2 months, then confirm Create export. Configure the resulting Drive folder ID for downloads.", nil
+		return "Review products in Google Takeout, select Add to Drive, then confirm Create export. After delivery, choose the resulting Drive folder for downloads.", nil
 	}
 	if err = m.configured(); err != nil {
 		return "", err

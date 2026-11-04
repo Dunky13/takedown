@@ -112,7 +112,7 @@ func TestJobsShowIndependentStatesAndArchiveWithoutDeletingFiles(t *testing.T) {
 	a.snapshot.Jobs = append(a.snapshot.Jobs, archived)
 	var created atomic.Int32
 	a.create = func(context.Context) (string, error) { created.Add(1); return "", nil }
-	s.tabs.SelectIndex(4)
+	s.tabs.Select(s.jobsTab)
 	test.Tap(s.jobsUI.buttons["load"])
 	awaitJob(t, s)
 	v := s.jobsUI
@@ -297,7 +297,7 @@ func TestUnknownIntentStaysHeldAndReconciliationRequiresKnownID(t *testing.T) {
 		t.Fatal("error details were not copyable")
 	}
 	tapDialogButton(t, s, "Close")
-	s.tabs.SelectIndex(4)
+	s.tabs.Select(s.jobsTab)
 	for _, size := range []fyne.Size{fyne.NewSize(960, 760), fyne.NewSize(800, 640)} {
 		s.w.Resize(size)
 		s.content.Refresh()
@@ -403,8 +403,7 @@ func TestResourceCheckboxesAndAdvancedEntryStayExactAcrossFiltering(t *testing.T
 	if s.resources.Text != "myactivity.search, myactivity.youtube" {
 		t.Fatal("checkbox choice did not match selected published groups exactly")
 	}
-	s.tabs.SelectIndex(2)
-	s.sourceTabs.SelectIndex(0)
+	s.tabs.Select(s.sourceTab)
 	for _, size := range []fyne.Size{fyne.NewSize(960, 760), fyne.NewSize(800, 640)} {
 		s.w.Resize(size)
 		s.content.Refresh()
@@ -544,7 +543,7 @@ func TestDiagnosticsAreExplicitOptInCopyableAndCancelable(t *testing.T) {
 	if len(options) != 0 || v.online.Checked || v.storage.Checked {
 		t.Fatal("diagnostics started or opted into remote checks automatically")
 	}
-	s.tabs.SelectIndex(5)
+	s.tabs.Select(s.diagnosticsTab)
 	test.Tap(v.run)
 	awaitJob(t, s)
 	if len(options) != 1 || options[0].Online || options[0].Storage || !strings.Contains(v.result.Text, "FAIL · destination") {
@@ -647,8 +646,8 @@ func TestStartupPreviewStatusAndConfirmedChangesUseInjectedAPI(t *testing.T) {
 		t.Fatal("startup inspected or changed automatically")
 	}
 	s.partByPart.SetChecked(true)
-	s.tabs.SelectIndex(5)
-	s.tabs.Items[5].Content.(*container.AppTabs).SelectIndex(1)
+	s.tabs.Select(s.diagnosticsTab)
+	s.diagnosticsTab.Content.(*container.AppTabs).SelectIndex(1)
 	test.Tap(v.buttons["preview"])
 	awaitJob(t, s)
 	test.Tap(v.buttons["status"])
@@ -832,8 +831,8 @@ func TestDestinationPasswordSaveForgetAreExplicitAndNeverExposeSecret(t *testing
 	if strings.Contains(string(configBytes), "session-only-password") {
 		t.Fatal("saved preferences contain destination password")
 	}
-	s.tabs.SelectIndex(5)
-	s.tabs.Items[5].Content.(*container.AppTabs).SelectIndex(2)
+	s.tabs.Select(s.diagnosticsTab)
+	s.diagnosticsTab.Content.(*container.AppTabs).SelectIndex(2)
 	for _, size := range []fyne.Size{fyne.NewSize(960, 760), fyne.NewSize(800, 640)} {
 		s.w.Resize(size)
 		s.content.Refresh()

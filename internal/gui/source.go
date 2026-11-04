@@ -21,11 +21,14 @@ import (
 
 const (
 	driveSourceLabel       = "Takeout in Google Drive"
-	portabilitySourceLabel = "Data Portability API (optional)"
+	portabilitySourceLabel = "Data Portability API"
 )
 
+// sourceContent is step 1. It also creates the fields that later steps share.
 func (s *screen) sourceContent() fyne.CanvasObject {
-	s.source = widget.NewSelect([]string{driveSourceLabel, portabilitySourceLabel}, nil)
+	s.source = widget.NewRadioGroup([]string{driveSourceLabel, portabilitySourceLabel}, nil)
+	s.source.Required = true
+	s.source.Horizontal = true
 	if s.a.Settings.EffectiveSource() == "portability" {
 		s.source.SetSelected(portabilitySourceLabel)
 	} else {
@@ -45,13 +48,38 @@ func (s *screen) sourceContent() fyne.CanvasObject {
 	s.resources.SetPlaceHolder("Explicit resource groups, e.g. myactivity.search")
 	s.pollInterval = widget.NewEntry()
 	s.pollInterval.SetText(strconv.FormatInt(int64(s.a.Settings.PollInterval().Seconds()), 10))
-	s.sourceSummary = wrappedLabel("")
-	s.sourceHelp = wrappedLabel("")
+	s.sourceSummary = widget.NewLabel("")
+	s.sourceSummary.Truncation = fyne.TextTruncateEllipsis
+	s.sourceBlurb = wrappedLabel("")
+	s.sourceHelp = wrappedLabel("Creates one API export job for your selected data when you press the button. Watching only checks existing jobs; it does not request more exports.")
 	s.disclosure = wrappedLabel("")
+	s.signInHelp = wrappedLabel("")
 	s.accessStatus = wrappedLabel("Configured source only. Authorization has not been checked in this session; the account email is a sign-in hint, not a verified identity.")
 	s.checkAccess = widget.NewButton("Check authorized access", s.inspectAccess)
 	s.folderBrowse = widget.NewButtonWithIcon("Choose Drive folder…", theme.FolderOpenIcon(), s.browseFolders)
-	s.create = widget.NewButtonWithIcon("", theme.ContentAddIcon(), s.createExport)
+	s.create = widget.NewButtonWithIcon("Create Data Portability export", theme.ContentAddIcon(), s.createExport)
+	s.openTakeout = widget.NewButton("Open Google Takeout", s.createExport)
+	s.openTakeout.Importance = widget.HighImportance
+	s.buttons = append(s.buttons, s.create, s.folderBrowse, s.checkAccess, s.openTakeout)
+	s.driveOptions = container.NewVScroll(container.NewVBox(
+		widget.NewLabelWithStyle("Export only what you need", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		wrappedLabel("1. Open Google Takeout."),
+		container.NewHBox(s.openTakeout),
+		wrappedLabel("2. Select Deselect all, then tick only the products you want."),
+		wrappedLabel("3. Choose Add to Drive as the delivery method, then select Create export."),
+		wrappedLabel("4. Google emails you when the export is ready, which can take hours or days. You can do Sign in and Save to now."),
+		docLink("Google's Takeout instructions", "https://support.google.com/accounts/answer/3024190"),
+	))
+	s.portabilityOptions = s.resourceContent()
+	return container.NewBorder(container.NewVBox(
+		pageTitle("Choose what to download"),
+		wrappedLabel("Pick where your data comes from, then choose the part of it you want."),
+		s.source, s.sourceBlurb,
+	), nil, nil, nil, container.NewStack(s.driveOptions, s.portabilityOptions))
+}
+
+// authorizeContent is step 2.
+func (s *screen) authorizeContent() fyne.CanvasObject {
 	clientBrowse := widget.NewButtonWithIcon("Select JSON…", theme.FileIcon(), func() {
 		if s.busy {
 			return
@@ -81,15 +109,9 @@ func (s *screen) sourceContent() fyne.CanvasObject {
 		picker.SetFilter(storage.NewExtensionFileFilter([]string{".json"}))
 		picker.Show()
 	})
-	s.buttons = append(s.buttons, clientBrowse, s.create, s.folderBrowse, s.checkAccess)
-	s.driveOptions = container.NewBorder(container.NewVBox(
-		wrappedLabel("In Google Takeout, choose products and Add to Drive delivery, then create an export or schedule. After delivery, choose its archive folder. Folder browsing runs only when you request it; watching scans only the chosen archive tree."),
-		s.folderBrowse,
-		wrappedLabel("Advanced: paste a folder ID or link"), s.driveFolder,
-	), nil, nil, nil, container.NewVScroll(container.NewVBox(docLink("Google's Takeout instructions", "https://support.google.com/accounts/answer/3024190"))))
-	s.portabilityOptions = s.resourceContent()
-	s.updateSourceLabels()
-	sourcePage := container.NewBorder(widget.NewForm(widget.NewFormItem("Source", s.source)), nil, nil, nil, container.NewStack(s.driveOptions, s.portabilityOptions))
+	s.buttons = append(s.buttons, clientBrowse)
+	s.driveDocLink = docLink("How to create a Desktop app OAuth client", "https://developers.google.com/identity/protocols/oauth2/native-app")
+	s.portabilityDocLink = docLink("Data Portability API setup", "https://developers.google.com/data-portability/user-guide/setup")
 	// Keep form controls fixed while only the disclosure scrolls. This avoids
 	// nested entry scroll clips in Fyne's software screenshot painter.
 	s.disclosureScroll = container.NewVScroll(container.NewVBox(
@@ -99,22 +121,14 @@ func (s *screen) sourceContent() fyne.CanvasObject {
 		s.disclosure,
 		docLink("Revoke remote access in Google Account permissions", "https://myaccount.google.com/permissions"),
 	))
-	authorizationPage := container.NewBorder(container.NewVBox(
-		wrappedLabel("Select the downloaded JSON for your OAuth Desktop app client."),
+	return container.NewBorder(container.NewVBox(
+		pageTitle("Sign in to Google"),
+		wrappedLabel("takedown needs your own OAuth Desktop app client. Select its JSON file, then sign in with Google in your browser."),
+		s.signInHelp,
+		s.driveDocLink, s.portabilityDocLink,
 		widget.NewForm(widget.NewFormItem("OAuth desktop client JSON", container.NewBorder(nil, nil, nil, clientBrowse, s.oauthClient)), widget.NewFormItem("Account email hint (optional)", s.email)),
-		s.checkAccess,
+		container.NewHBox(s.authorize, s.checkAccess, s.disconnect),
 	), nil, nil, nil, s.disclosureScroll)
-	exportPage := container.NewVBox(
-		s.create, s.sourceHelp,
-		widget.NewForm(widget.NewFormItem("Check every (seconds)", s.pollInterval)),
-		wrappedLabel("Default: 300 seconds. Minimum: 60 for Drive, 300 for Data Portability. Discover and Start watching are in the Archives tab. Stop watching keeps partial files; Pause downloads keeps the watch running."),
-	)
-	s.sourceTabs = container.NewAppTabs(
-		container.NewTabItem("1. Source", sourcePage),
-		container.NewTabItem("2. Authorization", authorizationPage),
-		container.NewTabItem("3. Export / watch", exportPage),
-	)
-	return s.sourceTabs
 }
 
 func docLink(label, target string) *widget.Hyperlink {
@@ -146,22 +160,40 @@ func (s *screen) accessDisclosure() string {
 }
 
 func (s *screen) updateSourceLabels() {
-	if s.selectedSource() == "portability" {
-		s.driveOptions.Hide()
-		s.portabilityOptions.Show()
-		s.sourceSummary.SetText("Source: Data Portability API · account email is a hint, not a verified identity")
-		s.create.SetText("Create Data Portability export")
-		s.checkAccess.Show()
-		s.sourceHelp.SetText("Creates one API export job for your selected resource groups when you press the button. Watching only checks existing jobs; it does not request more exports.")
+	portability := s.selectedSource() == "portability"
+	// The Jobs tab only manages Data Portability jobs; every control in it is unusable for Drive.
+	if portability {
+		s.tabs.EnableItem(s.jobsTab)
 	} else {
-		s.portabilityOptions.Hide()
-		s.driveOptions.Show()
-		s.sourceSummary.SetText("Source: Takeout delivered to Google Drive · account email is a sign-in hint")
-		s.create.SetText("Open Takeout to create / schedule")
-		s.checkAccess.Hide()
-		s.sourceHelp.SetText("Opens Google Takeout in your normal browser. Review the products, Add to Drive delivery, and schedule there, then confirm Create export yourself. After delivery, configure the archive folder above.")
+		s.tabs.DisableItem(s.jobsTab)
 	}
+	for _, shown := range []struct {
+		obj     fyne.CanvasObject
+		visible bool
+	}{
+		{s.portabilityOptions, portability}, {s.portabilityPrepare, portability}, {s.portabilityDocLink, portability}, {s.portabilityWarning, portability}, {s.checkAccess, portability},
+		{s.driveOptions, !portability}, {s.drivePrepare, !portability}, {s.driveDocLink, !portability},
+	} {
+		setVisible(shown.obj, shown.visible)
+	}
+	if portability {
+		s.sourceBlurb.SetText("For eligible accounts with their own Google Cloud project, billing and encrypted storage. takedown requests only the data you tick below.")
+		s.signInHelp.SetText("In a Google Cloud project with billing, enable the Data Portability API and meet Google's verification requirements. Then create a Desktop app OAuth client and download its JSON.")
+	} else {
+		s.sourceBlurb.SetText("Best for most people. You pick products on Google's Takeout page, Google delivers the archives to your Drive, and takedown downloads them.")
+		s.signInHelp.SetText("In a Google Cloud project, enable the Google Drive API and add the drive.readonly scope to the consent screen. While the app is in Testing, add your account as a test user. Then create a Desktop app OAuth client and download its JSON.")
+	}
+	s.updateSummary()
 	s.disclosure.SetText(s.accessDisclosure())
+	s.content.Refresh()
+}
+
+func (s *screen) updateSummary() {
+	destination := strings.TrimSpace(s.destination.Text)
+	if destination == "" {
+		destination = "no destination yet"
+	}
+	s.sourceSummary.SetText(s.source.Selected + " → " + destination)
 }
 
 func (s *screen) bindSourceChanges() {
@@ -172,7 +204,7 @@ func (s *screen) bindSourceChanges() {
 		if s.resourceUI != nil {
 			s.resourceUI.sync()
 		}
-		s.accessStatus.SetText("Source settings changed. Configured choices are not proof of authorized access. Check access again; the email remains a sign-in hint.")
+		s.accessStatus.SetText("Source settings changed. Configured choices are not proof of authorized access. Sign in again if needed; the email remains a sign-in hint.")
 		s.invalidateManagement()
 		if s.folderUI != nil && !s.folderUI.closed {
 			s.folderUI.dialog.Hide()
@@ -181,10 +213,17 @@ func (s *screen) bindSourceChanges() {
 			s.jobCancel()
 			s.status.SetText("Source changed. Stopping work; partial files will be kept.")
 		} else {
-			s.status.SetText("Source settings changed. Authorize if needed, then discover archives again.")
+			s.status.SetText("Settings updated. Sign in if these choices are new, then discover archives.")
 		}
 	}
-	s.source.OnChanged = changed
+	s.source.OnChanged = func(selected string) {
+		// Drive allows faster polling. A saved Drive interval must not block every
+		// Data Portability action from a field folded away on step 4.
+		if interval, err := strconv.Atoi(strings.TrimSpace(s.pollInterval.Text)); err == nil && s.selectedSource() == "portability" && interval != 0 && interval < 300 {
+			s.pollInterval.SetText("300")
+		}
+		changed(selected)
+	}
 	for _, entry := range []*widget.Entry{s.email, s.oauthClient, s.driveFolder, s.resources} {
 		entry.OnChanged = changed
 	}
@@ -199,19 +238,17 @@ func (s *screen) login() {
 		return
 	}
 	if strings.TrimSpace(s.oauthClient.Text) == "" {
-		s.tabs.SelectIndex(2)
-		s.sourceTabs.SelectIndex(1)
+		s.tabs.Select(s.authorizeTab)
 		dialog.ShowInformation("Select an OAuth client", "Select your OAuth desktop client JSON file before authorizing.", s.w)
 		return
 	}
 	if s.selectedSource() == "portability" && len(s.a.Settings.PortabilityResources) == 0 {
-		s.tabs.SelectIndex(2)
-		dialog.ShowInformation("Choose resource groups", "Enter the Data Portability resource groups you want to authorize.", s.w)
+		s.tabs.Select(s.sourceTab)
+		dialog.ShowInformation("Choose your data", "Tick the data you want to export before signing in.", s.w)
 		return
 	}
 	binding := sourceSnapshot{identity: s.a.Settings.SourceIdentity(), revision: s.sourceRevision, account: s.a.Account}
-	s.tabs.SelectIndex(2)
-	s.sourceTabs.SelectIndex(1)
+	s.tabs.Select(s.authorizeTab)
 	disclosure := container.NewVScroll(archiveLabel(s.accessDisclosure() + "\n\nContinue to Google's consent screen in your system browser?"))
 	confirmation := dialog.NewCustomConfirm("Before you authorize takedown", "Continue to Google", "Cancel", disclosure, func(yes bool) {
 		if !yes || s.busy || s.ctx.Err() != nil {
@@ -226,7 +263,11 @@ func (s *screen) login() {
 		s.invalidateManagement()
 		s.run("Complete Google sign-in and consent in your system browser…", func(ctx context.Context, b sourceSnapshot) error { return b.account.Login(ctx) }, func(err error, _ sourceSnapshot) {
 			if !s.showError(err) {
-				s.accessStatus.SetText("OAuth flow completed for the selected source. The account hint is not a verified identity; Check authorized access to inspect the current grant.")
+				text := "OAuth flow completed for the selected source. The account hint is not a verified identity."
+				if s.selectedSource() == "portability" {
+					text += " Use Check authorized access to inspect the current grant."
+				}
+				s.accessStatus.SetText(text)
 				s.status.SetText("Authorization complete. Discover archives or start watching.")
 			}
 		}, nil)
@@ -290,8 +331,9 @@ func (s *screen) startWatch() {
 	}
 	opts := app.WatchOptions{DownloadOptions: app.DownloadOptions{Destination: s.a.Settings.Destination, PartByPart: s.partByPart.Checked, StoragePassword: s.password.Text}, Interval: s.a.Settings.PollInterval(), ExportIDs: ids}
 	s.run(fmt.Sprintf("Watching for ready archives every %s…", opts.Interval), func(ctx context.Context, _ sourceSnapshot) error { return s.a.Watch(ctx, opts) }, nil, func() {
+		s.watchDialog.Hide()
 		s.watching = true
-		s.tabs.SelectIndex(1)
+		s.tabs.Select(s.transfersTab)
 		s.cancelButton.SetText("Stop watching")
 		s.pause.Enable()
 		s.resume.Enable()

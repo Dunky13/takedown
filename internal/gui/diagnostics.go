@@ -4,6 +4,7 @@ package gui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -12,6 +13,8 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"github.com/Dunky13/takedown/internal/app"
+	"github.com/Dunky13/takedown/internal/auth"
+	"github.com/Dunky13/takedown/internal/downloader"
 )
 
 type diagnosticsView struct {
@@ -70,7 +73,13 @@ func (v *diagnosticsView) setBusy(busy bool) {
 }
 
 func (s *screen) errorDialog(err error) {
-	text := err.Error() + "\n\nCheck the selected source and authorization. Diagnostics can check configuration, Google access, or the destination without starting sign-in. Retry mutations only after reviewing recorded job history."
+	text := err.Error() + "\n\n"
+	// Expired grants recur, for example weekly for OAuth apps in Testing, and only step 2 can sign in.
+	if errors.Is(err, auth.ErrAuthorizationRequired) || errors.Is(err, downloader.ErrReauthentication) {
+		s.tabs.Select(s.authorizeTab)
+		text += "To sign in, use Authorize in browser on step 2, which is now open. "
+	}
+	text += "Check the selected source and authorization. Diagnostics can check configuration, Google access, or the destination without starting sign-in. Retry mutations only after reviewing recorded job history."
 	copy := widget.NewButton("Copy error details", func() { fyne.CurrentApp().Clipboard().SetContent(err.Error()) })
 	content := container.NewBorder(nil, copy, nil, nil, container.NewVScroll(archiveLabel(text)))
 	d := dialog.NewCustom("Action could not complete", "Close", content, s.w)

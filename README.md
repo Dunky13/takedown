@@ -85,7 +85,8 @@ The workflow requires the repository setup described in that guide before use.
    link. Google's [Takeout guide](https://support.google.com/accounts/answer/3024190?hl=en)
    explains the delivery options. Existing email-link exports must be downloaded
    through Google's interface or recreated with a supported delivery method.
-3. **Authorize and download.** Use the GUI's setup controls, or run:
+3. **Authorize and download.** In the GUI, follow the four steps (Choose data, Sign in,
+   Save to, Download); you can untick individual archive parts before downloading. Or run:
 
    ```sh
    takedown auth --source drive --oauth-client ./oauth-client.json --drive-folder 'https://drive.google.com/drive/folders/FOLDER_ID'
@@ -129,7 +130,7 @@ from Takeout and cannot retrieve existing email-link exports. Follow Google's
 [API setup](https://developers.google.com/data-portability/user-guide/setup) and
 [verification requirements](https://developers.google.com/data-portability/user-guide/overview),
 including project billing, then configure a separate OAuth grant with only the
-resource groups you need. The GUI provides a searchable resource catalog.
+resource groups you need. The GUI provides a grouped, searchable resource catalog.
 
 **Establish encrypted storage before using this source.** Google's
 [Data Portability policy](https://developers.google.com/data-portability/policy)

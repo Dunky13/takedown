@@ -40,7 +40,7 @@ func (s *screen) startupContent() fyne.CanvasObject {
 }
 
 func (v *startupView) credentialsContent() fyne.CanvasObject {
-	return container.NewBorder(container.NewVBox(wrappedLabel("Use the masked Network storage password field in Destination, then save it here for unattended SMB or password-based SFTP downloads. Save stores it in the OS keyring, never preferences or the service definition. Forget removes stored authorization and keeps archives. Nothing is stored automatically."), container.NewHBox(v.buttons["save-password"], v.buttons["forget-password"])), nil, nil, nil, container.NewVScroll(v.credentialResult))
+	return container.NewBorder(container.NewVBox(wrappedLabel("Use the masked Network storage password field in step 3, Save to, then save it here for unattended SMB or password-based SFTP downloads. Save stores it in the OS keyring, never preferences or the service definition. Forget removes stored authorization and keeps archives. Nothing is stored automatically."), container.NewHBox(v.buttons["save-password"], v.buttons["forget-password"])), nil, nil, nil, container.NewVScroll(v.credentialResult))
 }
 
 func (v *startupView) credentials(forget bool) {
@@ -59,7 +59,7 @@ func (v *startupView) credentials(forget bool) {
 		return
 	}
 	if !forget && password == "" {
-		v.s.showError(errors.New("enter the destination password in the masked field in Destination before saving it"))
+		v.s.showError(errors.New("enter the destination password in the masked Network storage field in step 3, Save to, before saving it"))
 		return
 	}
 	binding := sourceSnapshot{identity: settings.SourceIdentity(), revision: v.s.sourceRevision, account: v.s.a.Account}
