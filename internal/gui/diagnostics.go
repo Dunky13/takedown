@@ -4,6 +4,7 @@ package gui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -12,12 +13,14 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"github.com/Dunky13/takedown/internal/app"
+	"github.com/Dunky13/takedown/internal/auth"
+	"github.com/Dunky13/takedown/internal/downloader"
 )
 
 type diagnosticsView struct {
 	s               *screen
 	online, storage *widget.Check
-	run, copy       *widget.Button
+	run, copy       *button
 	result          *widget.Label
 	diagnose        func(context.Context, app.DiagnosticOptions) (app.DiagnosticReport, error)
 }
@@ -28,7 +31,7 @@ func (s *screen) diagnosticsContent() fyne.CanvasObject {
 	v.online = widget.NewCheck("Check Google access online (no sign-in prompt)", nil)
 	v.storage = widget.NewCheck("Test destination access (may create the selected directory)", nil)
 	v.result = archiveLabel("Diagnostics have not run. Start with local configuration checks. Optional online and storage checks run only when selected; they never start OAuth or create exports.")
-	v.run = widget.NewButton("Run diagnostics", func() {
+	v.run = newButton("Run diagnostics", nil, func() {
 		opts := app.DiagnosticOptions{Online: v.online.Checked, Storage: v.storage.Checked, StoragePassword: s.password.Text}
 		var report app.DiagnosticReport
 		s.run("Running the diagnostics you selected…", func(ctx context.Context, _ sourceSnapshot) error {
@@ -51,10 +54,12 @@ func (s *screen) diagnosticsContent() fyne.CanvasObject {
 			s.status.SetText("Diagnostics completed. Review each check and its suggested action.")
 		}, nil)
 	})
-	v.copy = widget.NewButton("Copy diagnostic results", func() { fyne.CurrentApp().Clipboard().SetContent(v.result.Text) })
-	checks := container.NewBorder(container.NewVBox(wrappedLabel("Local checks inspect configuration and stored authorization. Online checks use existing Google access. Storage checks use this session's password and may create the selected directory, but no archive files. No check starts sign-in, creates an export, or verifies destination encryption."), v.online, v.storage, container.NewHBox(v.run, v.copy)), nil, nil, nil, container.NewVScroll(v.result))
+	v.copy = newButton("Copy results", nil, func() { fyne.CurrentApp().Clipboard().SetContent(v.result.Text) })
+	v.run.Importance, v.copy.Importance = widget.HighImportance, widget.LowImportance
+	checks := border(container.NewVBox(flush(helperText("Local checks inspect configuration and stored authorization. Online checks use existing Google access. Storage checks use this session's password and may create the selected directory, but no archive files. No check starts sign-in, creates an export, or verifies destination encryption.")), v.online, v.storage, container.NewHBox(v.run)), nil, nil, nil, resultPanel("Result", v.copy, v.result))
 	startup := s.startupContent()
-	return container.NewAppTabs(container.NewTabItem("Checks", checks), container.NewTabItem("Startup", startup), container.NewTabItem("Destination access", s.startupUI.credentialsContent()))
+	s.diagnosticsTabs = newSubTabs(container.NewTabItem("Checks", checks), container.NewTabItem("Startup", startup), container.NewTabItem("Destination access", s.startupUI.credentialsContent()))
+	return s.diagnosticsTabs.view
 }
 
 func (v *diagnosticsView) setBusy(busy bool) {
@@ -70,10 +75,23 @@ func (v *diagnosticsView) setBusy(busy bool) {
 }
 
 func (s *screen) errorDialog(err error) {
-	text := err.Error() + "\n\nCheck the selected source and authorization. Diagnostics can check configuration, Google access, or the destination without starting sign-in. Retry mutations only after reviewing recorded job history."
-	copy := widget.NewButton("Copy error details", func() { fyne.CurrentApp().Clipboard().SetContent(err.Error()) })
-	content := container.NewBorder(nil, copy, nil, nil, container.NewVScroll(archiveLabel(text)))
-	d := dialog.NewCustom("Action could not complete", "Close", content, s.w)
-	d.Resize(fyne.NewSize(600, 340))
+	advice := "Check the selected source and authorization. Diagnostics can check configuration, Google access, or the destination without starting sign-in. Retry mutations only after reviewing recorded job history."
+	// Expired grants recur, for example weekly for OAuth apps in Testing, and only step 2 can sign in.
+	if errors.Is(err, auth.ErrAuthorizationRequired) || errors.Is(err, downloader.ErrReauthentication) {
+		s.tabs.Select(s.authorizeTab)
+		advice = "To sign in, use Authorize in browser on step 2, which is now open. " + advice
+	}
+	s.errorDialogAdvice(err, advice)
+}
+
+// errorDialogAdvice shows the full error with advice that fits where it came
+// from, and a Copy button for the details.
+func (s *screen) errorDialogAdvice(err error, advice string) {
+	var d *dialog.CustomDialog
+	copy := newButton("Copy error details", nil, func() { fyne.CurrentApp().Clipboard().SetContent(err.Error()) })
+	closeButton := newButton("Close", nil, func() { d.Hide() })
+	closeButton.Importance = widget.HighImportance
+	d = s.dialogWithButtons("Action could not complete", container.NewVScroll(flush(archiveLabel(err.Error()+"\n\n"+advice))), copy, closeButton)
+	d.Resize(fyne.NewSize(fyne.Min(600, s.w.Canvas().Size().Width-32), 340))
 	d.Show()
 }

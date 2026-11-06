@@ -108,6 +108,8 @@ https://go.dev/cmd/go/#hdr-List_packages_or_modules.
 
 - `github.com/mitchellh/colorstring@v0.0.0-20190213212951-d06e56a500db` (darwin/amd64, darwin/arm64, linux/amd64, windows/amd64)
 
+- `github.com/ncruces/zenity@v0.10.15` (darwin/amd64, darwin/arm64, linux/amd64, windows/amd64)
+
 - `github.com/nfnt/resize@v0.0.0-20180221191011-83c6a9932646` (darwin/amd64, darwin/arm64, linux/amd64, windows/amd64)
 
 - `github.com/nicksnyder/go-i18n/v2@v2.5.1` (darwin/amd64, darwin/arm64, linux/amd64, windows/amd64)
@@ -7699,6 +7701,43 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+````
+
+
+## github.com/ncruces/zenity@v0.10.15
+
+Source: https://pkg.go.dev/github.com/ncruces/zenity@v0.10.15
+
+Targets: darwin/amd64, darwin/arm64, linux/amd64, windows/amd64
+
+Module checksum: `h1:UaHekkxwt7QjoZmMWtzhqSEtQT97/Cux6FDBWwfyuqk=`
+
+### github.com/ncruces/zenity@v0.10.15/LICENSE
+
+SHA-256: `f0fd8bae1b051ac3a95fdabcd30f24f0835ec3ca6d446d0564555758f09941ac`
+
+````text
+MIT License
+
+Copyright (c) 2019-2026 Nuno Cruces
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ````
 
 

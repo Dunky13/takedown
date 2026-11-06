@@ -141,7 +141,7 @@ func TestStartupRelativePathEditsInvalidateOpenInstallConfirmation(t *testing.T)
 				s.knownHosts.SetText("other-known-hosts")
 			}
 			tapDialogButton(t, s, "Confirm startup change")
-			if calls != 0 || s.busy || s.a.Account != account || !strings.Contains(s.status.Text, "Settings changed") {
+			if calls != 0 || s.busy || s.a.Account != account || !strings.Contains(s.banner.Text, "Settings changed") {
 				t.Fatal("a stale path confirmation reached the startup backend")
 			}
 		})

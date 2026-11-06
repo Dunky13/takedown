@@ -4,6 +4,8 @@ package gui
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -45,8 +47,8 @@ func (s *screen) preferences() (config.Settings, error) {
 	cfg.PollIntervalSeconds = interval
 	cfg.SafetyBuffer = buffer
 	cfg.Concurrency = workers
-	cfg.KnownHostsPath = strings.TrimSpace(s.knownHosts.Text)
-	cfg.PrivateKeyPath = strings.TrimSpace(s.sshKey.Text)
+	cfg.KnownHostsPath = expandHome(s.knownHosts.Text)
+	cfg.PrivateKeyPath = expandHome(s.sshKey.Text)
 	cfg.AllowUnknownSpace = s.unknown.Checked
 	return cfg, cfg.Validate()
 }
@@ -101,4 +103,16 @@ func (s *screen) adoptStartupRuntimePaths() error {
 	s.sshKey.SetText(normalized.PrivateKeyPath)
 	s.knownHosts.SetText(normalized.KnownHostsPath)
 	return nil
+}
+
+// expandHome turns a leading ~ into the home folder. Neither the shell nor the
+// SFTP code does it for a path typed into a field.
+func expandHome(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[1:])
+		}
+	}
+	return path
 }

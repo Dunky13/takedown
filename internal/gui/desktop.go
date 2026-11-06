@@ -31,6 +31,7 @@ func Run(ctx context.Context, dataDir string, settings config.Settings) (retErr 
 	}
 	metadata.Migrations["fyneDo"] = true
 	fyneapp.SetMetadata(metadata)
+	desktop.Settings().SetTheme(appTheme{})
 	w := desktop.NewWindow("takedown")
 	s := newScreen(ctx, desktop, w, a)
 	defer s.close()

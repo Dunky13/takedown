@@ -10,7 +10,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 	"github.com/Dunky13/takedown/internal/config"
 )
@@ -19,28 +19,34 @@ type startupView struct {
 	s                *screen
 	configure        func(context.Context, string, bool, bool) (string, error)
 	result           *widget.Label
-	buttons          map[string]*widget.Button
+	buttons          map[string]*button
 	savePassword     func(string, string, string) error
 	forgetPassword   func(string, string) error
 	credentialResult *widget.Label
 }
 
 func (s *screen) startupContent() fyne.CanvasObject {
-	v := &startupView{s: s, configure: s.a.ConfigureStartup, buttons: make(map[string]*widget.Button), savePassword: config.SaveStoragePassword, forgetPassword: config.ForgetStoragePassword}
+	v := &startupView{s: s, configure: s.a.ConfigureStartup, buttons: make(map[string]*button), savePassword: config.SaveStoragePassword, forgetPassword: config.ForgetStoragePassword}
 	s.startupUI = v
 	v.result = archiveLabel("Startup has not been inspected. Preview the definition before installing. These controls manage only this user's login watcher.")
 	for _, item := range []struct{ key, label string }{{"preview", "Preview definition"}, {"status", "Check startup status"}, {"install", "Install login watcher…"}, {"remove", "Remove login watcher…"}} {
-		v.buttons[item.key] = widget.NewButton(item.label, func() { v.request(item.key) })
+		v.buttons[item.key] = newButton(item.label, nil, func() { v.request(item.key) })
 	}
-	v.buttons["save-password"] = widget.NewButton("Save destination password…", func() { v.credentials(false) })
-	v.buttons["forget-password"] = widget.NewButton("Forget destination password…", func() { v.credentials(true) })
+	v.buttons["save-password"] = newButton("Save destination password…", nil, func() { v.credentials(false) })
+	v.buttons["forget-password"] = newButton("Forget destination password…", nil, func() { v.credentials(true) })
 	v.credentialResult = archiveLabel("No destination authorization action has been requested in this session.")
-	copy := widget.NewButton("Copy startup result", func() { fyne.CurrentApp().Clipboard().SetContent(v.result.Text) })
-	return container.NewBorder(container.NewVBox(wrappedLabel("A login watcher downloads ready archives using saved preferences. Installation starts it for your user and may download immediately. It does not sign in or create exports. OAuth and destination credentials must already be stored."), container.NewHBox(v.buttons["preview"], v.buttons["status"]), container.NewHBox(v.buttons["install"], v.buttons["remove"])), copy, nil, nil, container.NewVScroll(v.result))
+	copy := newButton("Copy results", nil, func() { fyne.CurrentApp().Clipboard().SetContent(v.result.Text) })
+	// Preview is the safe first step; installing or forgetting is never the loud one.
+	v.buttons["preview"].Importance = widget.HighImportance
+	return border(container.NewVBox(
+		flush(helperText("A login watcher downloads ready archives using saved preferences. It does not sign in or create exports. OAuth and destination credentials must already be stored.")),
+		newCallout("Installing the watcher starts it for your user and may download immediately."),
+		container.NewHBox(v.buttons["preview"], v.buttons["status"], layout.NewSpacer(), v.buttons["install"], v.buttons["remove"]),
+	), nil, nil, nil, resultPanel("Result", copy, v.result))
 }
 
 func (v *startupView) credentialsContent() fyne.CanvasObject {
-	return container.NewBorder(container.NewVBox(wrappedLabel("Use the masked Network storage password field in Destination, then save it here for unattended SMB or password-based SFTP downloads. Save stores it in the OS keyring, never preferences or the service definition. Forget removes stored authorization and keeps archives. Nothing is stored automatically."), container.NewHBox(v.buttons["save-password"], v.buttons["forget-password"])), nil, nil, nil, container.NewVScroll(v.credentialResult))
+	return border(container.NewVBox(flush(helperText("Use the masked Network storage password field in step 3, Save to, then save it here for unattended SMB or password-based SFTP downloads. Save stores it in the OS keyring, never preferences or the service definition. Forget removes stored authorization and keeps archives. Nothing is stored automatically.")), container.NewHBox(v.buttons["save-password"], v.buttons["forget-password"])), nil, nil, nil, resultPanel("Result", nil, v.credentialResult))
 }
 
 func (v *startupView) credentials(forget bool) {
@@ -59,7 +65,7 @@ func (v *startupView) credentials(forget bool) {
 		return
 	}
 	if !forget && password == "" {
-		v.s.showError(errors.New("enter the destination password in the masked field in Destination before saving it"))
+		v.s.showError(errors.New("enter the destination password in the masked Network storage field in step 3, Save to, before saving it"))
 		return
 	}
 	binding := sourceSnapshot{identity: settings.SourceIdentity(), revision: v.s.sourceRevision, account: v.s.a.Account}
@@ -67,13 +73,13 @@ func (v *startupView) credentials(forget bool) {
 	if forget {
 		text = "Forget the selected destination's password from the OS keyring? Future automatic downloads may need credentials again. Existing archive files and partial downloads are kept. The masked session password is also cleared."
 	}
-	d := dialog.NewConfirm("Confirm destination authorization", text, func(yes bool) {
+	v.s.confirmText("Confirm destination authorization", text, "Confirm destination authorization", func(yes bool) {
 		if !yes || v.s.busy || v.s.ctx.Err() != nil {
 			return
 		}
 		current, err := v.s.preferences()
 		if err != nil || !binding.matches(v.s) || !reflect.DeepEqual(settings, current) || password != v.s.password.Text {
-			v.s.status.SetText("Settings or password changed. Review destination authorization and confirm again.")
+			v.s.notice("Settings or password changed. Review destination authorization and confirm again.")
 			return
 		}
 		v.s.run("Updating the confirmed destination authorization…", func(context.Context, sourceSnapshot) error {
@@ -93,10 +99,7 @@ func (v *startupView) credentials(forget bool) {
 			}
 			v.s.status.SetText("Destination authorization updated.")
 		}, nil)
-	}, v.s.w)
-	d.SetConfirmText("Confirm destination authorization")
-	d.SetDismissText("Cancel")
-	d.Show()
+	})
 }
 
 func (v *startupView) setBusy(busy bool) {
@@ -130,20 +133,17 @@ func (v *startupView) request(action string) {
 	if action == "remove" {
 		text = "Stop and remove this user's login watcher? Automatic watching will stop. Existing archive files and partial downloads are kept."
 	}
-	d := dialog.NewConfirm("Confirm startup change", text, func(yes bool) {
+	v.s.confirmText("Confirm startup change", text, "Confirm startup change", func(yes bool) {
 		if !yes || v.s.busy || v.s.ctx.Err() != nil {
 			return
 		}
 		current, err := v.s.preferences()
 		if err != nil || !binding.matches(v.s) || !reflect.DeepEqual(settings, current) || partByPart != v.s.partByPart.Checked {
-			v.s.status.SetText("Settings changed. Review startup settings and confirm again.")
+			v.s.notice("Settings changed. Review startup settings and confirm again.")
 			return
 		}
 		v.apply(action)
-	}, v.s.w)
-	d.SetConfirmText("Confirm startup change")
-	d.SetDismissText("Cancel")
-	d.Show()
+	})
 }
 
 func (v *startupView) apply(action string) {
@@ -168,7 +168,7 @@ func (v *startupView) apply(action string) {
 		return err
 	}, func(err error, _ sourceSnapshot) {
 		if errors.Is(err, context.Canceled) {
-			v.s.status.SetText("Startup action stopped. Check startup status before trying another change.")
+			v.s.notice("Startup action stopped. Check startup status before trying another change.")
 			return
 		}
 		if v.s.showError(err) {
