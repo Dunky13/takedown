@@ -248,6 +248,9 @@ headers and EGL are needed. Other distributions need equivalent packages; see
 and [Fyne's build requirements](https://docs.fyne.io/started/). Fyne does not
 require WebKit2GTK.
 
+At runtime on Linux, the GUI's folder and file buttons open a native dialog when
+`zenity`, `qarma` or `matedialog` is installed, and Fyne's own dialog otherwise.
+
 From the repository root on macOS or Linux with GNU Make:
 
 ```sh

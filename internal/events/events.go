@@ -15,6 +15,7 @@ const (
 	ReAuthRequired Kind = "reauth_required"
 	Status         Kind = "status"
 	Error          Kind = "error"
+	Warning        Kind = "warning"
 )
 
 type Event struct {

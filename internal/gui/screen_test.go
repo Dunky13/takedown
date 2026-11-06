@@ -99,6 +99,7 @@ func (*screenAccount) Close() error { return nil }
 func newTestScreen(t *testing.T, change func(*config.Settings)) (*screen, *screenAccount) {
 	t.Helper()
 	base := test.NewTempApp(t)
+	base.Settings().SetTheme(appTheme{}) // captures show the real look, not the test theme
 	desktop := &queuedApp{App: base, driver: &queuedDriver{Driver: base.Driver(), pending: make(chan func(), 1024)}}
 	fyne.SetCurrentApp(desktop)
 	w := desktop.NewWindow("takedown")
@@ -221,7 +222,7 @@ func TestScreenRendersProgressAndSpaceWarning(t *testing.T) {
 	if !s.banner.Visible() || s.banner.Text != "Free space, then retry." {
 		t.Fatal("space warning not visible")
 	}
-	if s.banner.Position().Y <= 0 {
+	if !bannerBelowHeader(s) {
 		t.Fatal("warning overlaps the application heading")
 	}
 	s.setBusy(true)
@@ -294,8 +295,8 @@ func TestDiscoveryRejectsLateResultAfterSourceEdit(t *testing.T) {
 	if s.discoveryBound || len(s.ready) != 0 || s.busy {
 		t.Fatal("late discovery rebound stale archives")
 	}
-	if !strings.Contains(s.status.Text, "Source changed") {
-		t.Fatalf("status = %q", s.status.Text)
+	if !strings.Contains(s.banner.Text, "Source changed") {
+		t.Fatalf("status = %q", s.banner.Text)
 	}
 }
 
@@ -348,6 +349,10 @@ func findDialogButton(obj fyne.CanvasObject, label string) *widget.Button {
 	case *widget.Button:
 		if object.Text == label {
 			return object
+		}
+	case *button:
+		if object.Text == label {
+			return &object.Button
 		}
 	case *widget.PopUp:
 		return findDialogButton(object.Content, label)
@@ -537,7 +542,7 @@ func TestWatchControlsAndCancellationRetainPartials(t *testing.T) {
 	s.content.Refresh()
 	assertWindowFits(t, s, fyne.NewSize(800, 640))
 	captureScreen(t, s, "gui-watch-800.png")
-	for _, control := range []*widget.Button{s.pause, s.resume} {
+	for _, control := range []*button{s.pause, s.resume} {
 		test.Tap(control)
 		if !s.pause.Disabled() || !s.resume.Disabled() || s.cancelButton.Disabled() {
 			t.Fatal("pause/resume requests were not serialized with Stop available")
@@ -638,7 +643,7 @@ func TestWatchRejectsSourceEditAndKeepsStopCancellation(t *testing.T) {
 	receive(t, listed)
 	s.oauthClient.SetText(filepath.Join(s.a.DataDir, "another-client.json"))
 	awaitJob(t, s)
-	if s.busy || s.watching || s.discoveryBound || !strings.Contains(s.status.Text, "Source changed") {
+	if s.busy || s.watching || s.discoveryBound || !strings.Contains(s.banner.Text, "Source changed") {
 		t.Fatal("source edit did not stop the watch and invalidate its authority")
 	}
 }
@@ -686,6 +691,11 @@ func TestWatchSelectedRejectsStaleDiscovery(t *testing.T) {
 	}
 }
 
+// bannerBelowHeader reports whether the banner is painted beneath the heading row.
+func bannerBelowHeader(s *screen) bool {
+	return fyne.CurrentApp().Driver().AbsolutePositionForObject(s.banner).Y >= s.header.Position().Y+s.header.Size().Height
+}
+
 // assertWindowFits checks the whole layout fits and that the buttons on the
 // selected step, plus the footer, are not clipped. Buttons on other steps or
 // hidden by the source are skipped; assertStepsFit visits every step.
@@ -694,11 +704,11 @@ func assertWindowFits(t *testing.T, s *screen, size fyne.Size) {
 	if minimum := s.content.MinSize(); minimum.Width > size.Width || minimum.Height > size.Height {
 		t.Fatalf("content minimum %v exceeds requested window %v", minimum, size)
 	}
-	pages := map[*widget.Button]*container.TabItem{s.authorize: s.authorizeTab, s.disconnect: s.authorizeTab, s.checkAccess: s.authorizeTab, s.find: s.archivesTab, s.downloadButton: s.archivesTab, s.pause: s.transfersTab, s.resume: s.transfersTab}
+	pages := map[*button]*container.TabItem{s.authorize: s.authorizeTab, s.disconnect: s.authorizeTab, s.checkAccess: s.authorizeTab, s.find: s.archivesTab, s.downloadButton: s.archivesTab, s.pause: s.transfersTab, s.resume: s.transfersTab}
 	if s.selectedSource() == "drive" {
 		pages[s.openTakeout], pages[s.folderBrowse] = s.sourceTab, s.archivesTab
 	}
-	buttons := []*widget.Button{s.cancelButton, s.back, s.next} // the footer shows on every tab
+	buttons := []*button{s.cancelButton, s.back, s.next} // the footer shows on every tab
 	for button, page := range pages {
 		if page == s.tabs.Selected() {
 			buttons = append(buttons, button)
@@ -800,7 +810,7 @@ func TestLongDriveIdentityAndFilenameWrapWithoutExposingIDs(t *testing.T) {
 			}
 		}
 	}
-	if nameLabel == nil || nameLabel.Wrapping != fyne.TextWrapBreak {
+	if nameLabel == nil || nameLabel.Wrapping != fyne.TextWrapWord {
 		t.Fatal("full filename is not displayed with wrapping")
 	}
 	for _, viewport := range []struct {
@@ -818,7 +828,7 @@ func TestLongDriveIdentityAndFilenameWrapWithoutExposingIDs(t *testing.T) {
 		assertWindowFits(t, s, viewport.size)
 		label := archiveLabel("")
 		s.transferList.UpdateItem(0, label)
-		if strings.Contains(label.Text, opaqueID) || !strings.Contains(label.Text, filename) || label.Wrapping != fyne.TextWrapBreak || label.MinSize().Width > viewport.size.Width {
+		if strings.Contains(label.Text, opaqueID) || !strings.Contains(label.Text, filename) || label.Wrapping != fyne.TextWrapWord || label.MinSize().Width > viewport.size.Width {
 			t.Fatal("transfer label exposed identity, hid the filename, or forced excess width")
 		}
 		captureScreen(t, s, "gui-long-drive-transfers-"+viewport.suffix+".png")
@@ -842,6 +852,7 @@ func TestDisclosureScrollDoesNotPaintOverFixedControls(t *testing.T) {
 	if !strings.Contains(s.disclosure.Text, "Data Portability archives require encryption in transit and at rest") {
 		t.Fatal("scroll clipping regression does not cover the encryption disclosure")
 	}
+	s.disclosureAccordion.Open(0) // the disclosure is collapsed until asked for
 	for _, viewport := range []struct {
 		size   fyne.Size
 		suffix string

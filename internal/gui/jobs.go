@@ -11,7 +11,6 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"github.com/Dunky13/takedown/internal/source"
 )
@@ -37,18 +36,20 @@ type jobsView struct {
 	selectedID       string
 	visible          []source.Job
 	list             *widget.List
+	empty            *widget.Label
+	emptyHint        fyne.CanvasObject
 	details, pending *widget.Label
-	knownID          *widget.Entry
+	knownID          *entry
 	archived         *widget.Check
-	buttons          map[string]*widget.Button
+	buttons          map[string]*button
 }
 
 func (s *screen) jobsContent() fyne.CanvasObject {
-	v := &jobsView{s: s, buttons: make(map[string]*widget.Button)}
+	v := &jobsView{s: s, buttons: make(map[string]*button)}
 	s.jobsUI = v
 	v.details = archiveLabel("Load recorded jobs, then select a row for details and available actions.")
 	v.pending = archiveLabel("No job history loaded. Loading reads local receipts; refreshing checks Google without creating exports.")
-	v.knownID = widget.NewEntry()
+	v.knownID = newEntry()
 	v.knownID.SetPlaceHolder("Known job ID from Google's response or your saved receipt")
 	v.knownID.OnChanged = func(string) { v.setBusy(s.busy) }
 	v.archived = widget.NewCheck("Include archived history", func(bool) { v.render() })
@@ -63,26 +64,30 @@ func (s *screen) jobsContent() fyne.CanvasObject {
 		}
 	})
 	v.list.OnSelected = func(id widget.ListItemID) { v.selectedID = v.visible[id].ID; v.showDetails(); v.setBusy(s.busy) }
-	button := func(key, label string, action func()) *widget.Button {
-		b := widget.NewButton(label, action)
+	button := func(key, label string, action func()) *button {
+		b := newButton(label, nil, action)
 		v.buttons[key] = b
 		return b
 	}
+	v.empty = helperText("No jobs loaded yet. Load recorded jobs to see them here.")
+	v.emptyHint = hint(v.empty)
 	load := button("load", "Load recorded jobs", func() { s.loadJobs(false) })
+	load.Importance = widget.HighImportance
 	refresh := button("refresh", "Refresh Google status", func() { s.loadJobs(true) })
 	retry := button("retry", "Retry failed job", func() { v.mutate("retry") })
 	cancel := button("cancel", "Cancel remote job", func() { v.mutate("cancel") })
 	archive := button("archive", "Archive history", func() { v.mutate("archive") })
 	reset := button("reset", "Reset Google access…", func() { v.mutate("reset") })
+	reset.Importance = widget.LowImportance
 	reconcile := button("reconcile", "Reconcile known job", func() { v.mutate("reconcile") })
 	expire := button("expire", "Resolve expired hold…", func() { v.mutate("expire") })
 	v.knownID.Hide()
 	reconcile.Hide()
 	expire.Hide()
-	return container.NewBorder(
-		container.NewHBox(load, refresh, v.archived),
-		container.NewVBox(widget.NewSeparator(), v.pending, v.knownID, container.NewHBox(reconcile, expire), container.NewHBox(retry, cancel, archive, reset)),
-		nil, nil, container.NewHSplit(v.list, container.NewVScroll(v.details)),
+	return border(
+		container.NewVBox(pageHeader("Jobs", ""), container.NewHBox(load, refresh, v.archived)),
+		container.NewVBox(v.pending, v.knownID, container.NewHBox(reconcile, expire), container.NewHBox(retry, cancel, archive, reset)),
+		nil, nil, container.NewGridWithColumns(2, newPanel(container.NewStack(v.list, v.emptyHint)), newPanel(container.NewVScroll(v.details))),
 	)
 }
 
@@ -148,6 +153,7 @@ func (v *jobsView) render() {
 	}
 	v.list.UnselectAll()
 	v.list.Refresh()
+	v.syncEmpty()
 	selectedVisible := false
 	for i, j := range v.visible {
 		if j.ID == v.selectedID {
@@ -178,6 +184,16 @@ func (v *jobsView) render() {
 	v.setBusy(v.s.busy)
 }
 
+// syncEmpty teaches what the list is for until it has rows.
+func (v *jobsView) syncEmpty() {
+	text := "No jobs loaded yet. Load recorded jobs to see them here."
+	if v.loaded {
+		text = "No recorded jobs to show."
+	}
+	v.empty.SetText(text)
+	setVisible(v.emptyHint, len(v.visible) == 0)
+}
+
 func (s *screen) invalidateManagement() {
 	v := s.jobsUI
 	if v == nil {
@@ -190,6 +206,7 @@ func (s *screen) invalidateManagement() {
 	v.visible = nil
 	v.list.UnselectAll()
 	v.list.Refresh()
+	v.syncEmpty()
 	v.knownID.SetText("")
 	v.knownID.Hide()
 	v.buttons["reconcile"].Hide()
@@ -288,7 +305,7 @@ func (v *jobsView) mutate(kind string) {
 	if kind == "reconcile" {
 		text += "\n\nKnown receipt ID: " + knownID
 	}
-	confirmation := dialog.NewConfirm("Confirm export job action", text, func(yes bool) {
+	v.s.confirmText("Confirm export job action", text, "Confirm action", func(yes bool) {
 		if !yes || v.s.busy || v.s.ctx.Err() != nil || !binding.matches(v.s) {
 			return
 		}
@@ -326,7 +343,7 @@ func (v *jobsView) mutate(kind string) {
 			if errors.Is(err, context.Canceled) {
 				v.loaded = false
 				v.setBusy(false)
-				v.s.status.SetText("Stopped. A remote request may have reached Google. Load recorded jobs before another action; unknown outcomes stay held.")
+				v.s.notice("Stopped. A remote request may have reached Google. Load recorded jobs before another action; unknown outcomes stay held.")
 				return
 			}
 			if v.s.showError(err) {
@@ -336,12 +353,9 @@ func (v *jobsView) mutate(kind string) {
 			if kind == "reset" {
 				v.s.sourceRevision++
 				v.s.invalidateManagement()
-				v.s.accessStatus.SetText("Google access reset. Authorize again before requesting another export.")
+				v.s.setAccessStatus("Google access reset. Authorize again before requesting another export.", widget.LowImportance)
 			}
 			v.s.status.SetText("Confirmed job action completed. Local files were kept.")
 		}, nil)
-	}, v.s.w)
-	confirmation.SetConfirmText("Confirm action")
-	confirmation.SetDismissText("Cancel")
-	confirmation.Show()
+	})
 }

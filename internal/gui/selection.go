@@ -139,7 +139,7 @@ func (s *screen) showExports(binding sourceSnapshot) {
 			if done[part.Key()] {
 				text += "  ·  downloaded earlier"
 			}
-			s.exports.Add(container.NewBorder(nil, nil, row, nil, archiveLabel(text)))
+			s.exports.Add(border(nil, nil, row, nil, archiveLabel(text)))
 		}
 		refresh()
 	}
@@ -188,6 +188,12 @@ func (s *screen) updateSelectionSummary() {
 	s.selectionSummary.SetText(fmt.Sprintf("Selected %d of %d archive files  ·  %s", len(picked), total, humanSize(size)))
 	if shown := total > 0; shown != s.selectionRow.Visible() {
 		setVisible(s.selectionRow, shown)
+		setVisible(s.downloadRow, shown)
+		s.find.Importance = widget.HighImportance
+		if shown {
+			s.find.Importance = widget.MediumImportance
+		}
+		s.find.Refresh()
 		s.content.Refresh()
 	}
 }

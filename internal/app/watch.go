@@ -56,7 +56,7 @@ func (a *App) Watch(ctx context.Context, opts WatchOptions) error {
 				// This job's immutable data is held, but a different recorded job
 				// may become ready later. Retain the normal polling cadence.
 				failures = 0
-				a.Bus.Publish(events.Event{Kind: events.Status, Message: "An export job is held for review; other jobs remain eligible and watching will continue"})
+				a.Bus.Publish(events.Event{Kind: events.Warning, Message: "An export job is held for review; other jobs remain eligible and watching will continue"})
 			} else {
 				if !source.IsTemporary(err) && !downloader.IsTemporary(err) {
 					return err

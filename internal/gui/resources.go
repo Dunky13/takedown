@@ -27,7 +27,7 @@ type resourceGroup struct {
 	title    string
 	names    []string
 	check    *widget.Check
-	toggle   *widget.Button
+	toggle   *button
 	row      *fyne.Container
 	children *fyne.Container
 	expanded bool
@@ -35,14 +35,14 @@ type resourceGroup struct {
 
 type resourceChooser struct {
 	s        *screen
-	filter   *widget.Entry
+	filter   *entry
 	checks   map[string]*widget.Check
 	labels   map[string]string // lower-cased "<group> <child>" text each check shows
 	groups   []*resourceGroup
 	names    []string
 	summary  *widget.Label
 	scroll   *container.Scroll
-	manual   *widget.Button
+	manual   *button
 	updating bool
 }
 
@@ -67,9 +67,9 @@ func (s *screen) resourceContent() fyne.CanvasObject {
 	v := &resourceChooser{s: s, names: source.Resources(), checks: make(map[string]*widget.Check), labels: make(map[string]string)}
 	s.resourceUI = v
 	sort.Strings(v.names)
-	v.filter = widget.NewEntry()
+	v.filter = newEntry()
 	v.filter.SetPlaceHolder("Filter, e.g. Chrome or YouTube")
-	v.summary = wrappedLabel("")
+	v.summary = helperText("")
 	byPrefix := make(map[string]*resourceGroup)
 	for _, name := range v.names {
 		prefix, child, found := strings.Cut(name, ".")
@@ -95,7 +95,7 @@ func (s *screen) resourceContent() fyne.CanvasObject {
 		}
 		g.children = container.New(layout.NewCustomPaddedLayout(0, 0, theme.Padding()*8, 0), kids)
 		g.check = widget.NewCheck(g.title, func(on bool) { v.toggleGroup(g, on) })
-		g.toggle = widget.NewButtonWithIcon("", theme.NavigateNextIcon(), func() {
+		g.toggle = newButton("", theme.MenuExpandIcon(), func() {
 			g.expanded = !g.expanded
 			v.applyFilter()
 		})
@@ -104,9 +104,9 @@ func (s *screen) resourceContent() fyne.CanvasObject {
 		rows.Add(g.row)
 	}
 	v.filter.OnChanged = func(string) { v.applyFilter() }
-	manual := container.NewVBox(wrappedLabel("Advanced: comma-separated published resource group names. These entries and the checkboxes stay synchronized."), s.resources)
+	manual := container.NewVBox(flush(helperText("Advanced: comma-separated published resource group names. These entries and the checkboxes stay synchronized.")), s.resources)
 	manual.Hide()
-	v.manual = widget.NewButton("Advanced: enter resource names…", func() {
+	v.manual = newButton("Advanced: enter resource names…", nil, func() {
 		if manual.Visible() {
 			manual.Hide()
 		} else {
@@ -115,13 +115,15 @@ func (s *screen) resourceContent() fyne.CanvasObject {
 		s.portabilityOptions.Refresh()
 	})
 	v.manual.Importance = widget.LowImportance
+	v.manual.Alignment = widget.ButtonAlignLeading
 	v.sync()
 	for _, g := range v.groups {
 		g.expanded = v.selectedCount(g) > 0
 	}
 	v.applyFilter()
-	v.scroll = container.NewVScroll(rows)
-	return container.NewBorder(container.NewVBox(wrappedLabel("Tick only the data you want. takedown asks Google for access to these items and nothing else."), v.filter), container.NewVBox(v.summary, v.manual, manual), nil, nil, v.scroll)
+	// Tighter rows fit more of the catalog on a small window, at the same text size.
+	v.scroll = scrolled(container.NewThemeOverride(rows, tweakTheme{sizes: map[fyne.ThemeSizeName]float32{theme.SizeNameInnerPadding: 4}}))
+	return border(container.NewVBox(flush(helperText("Tick only the data you want. takedown asks Google for access to these items and nothing else.")), v.filter), container.NewVBox(border(nil, nil, flush(v.summary), v.manual, nil), manual), nil, nil, v.scroll)
 }
 
 func (v *resourceChooser) selectedCount(g *resourceGroup) int {
@@ -157,7 +159,7 @@ func (v *resourceChooser) applyFilter() {
 		if open {
 			g.toggle.SetIcon(theme.MenuDropDownIcon())
 		} else {
-			g.toggle.SetIcon(theme.NavigateNextIcon())
+			g.toggle.SetIcon(theme.MenuExpandIcon())
 		}
 		setVisible(g.row, hasMatch)
 	}

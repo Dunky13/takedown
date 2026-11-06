@@ -303,7 +303,7 @@ func TestUnknownIntentStaysHeldAndReconciliationRequiresKnownID(t *testing.T) {
 		s.content.Refresh()
 		assertWindowFits(t, s, size)
 		for _, name := range []string{"load", "refresh", "reconcile", "expire", "retry", "cancel", "archive", "reset"} {
-			assertButtonFits(t, s, v.buttons[name], size)
+			assertButtonFits(t, s, &v.buttons[name].Button, size)
 		}
 		captureScreen(t, s, fmt.Sprintf("gui-jobs-held-%d.png", int(size.Width)))
 	}
@@ -366,7 +366,7 @@ func TestCanceledMutationRequiresReloadBeforeAnotherAction(t *testing.T) {
 	receive(t, entered)
 	test.Tap(s.cancelButton)
 	awaitJob(t, s)
-	if s.jobsUI.loaded || !s.jobsUI.buttons["cancel"].Disabled() || !strings.Contains(s.status.Text, "remote request may have reached Google") {
+	if s.jobsUI.loaded || !s.jobsUI.buttons["cancel"].Disabled() || !strings.Contains(s.banner.Text, "remote request may have reached Google") {
 		t.Fatal("canceled mutation allowed replay or claimed only a local stop")
 	}
 	s.loadJobs(false)
@@ -409,7 +409,7 @@ func TestResourceCheckboxesAndAdvancedEntryStayExactAcrossFiltering(t *testing.T
 		s.content.Refresh()
 		assertWindowFits(t, s, size)
 		captureScreen(t, s, fmt.Sprintf("gui-resource-chooser-%d.png", int(size.Width)))
-		assertButtonFits(t, s, v.manual, size)
+		assertButtonFits(t, s, &v.manual.Button, size)
 		assertScrollPaintContained(t, s, v.scroll)
 	}
 	s.setBusy(true)
@@ -446,7 +446,7 @@ func TestFolderPickerBrowseIsExplicitAndSelectionKeepsOpaqueIDInternal(t *testin
 	if len(parents) != 1 || parents[0] != "" || !p.choose.Disabled() {
 		t.Fatal("root browse or selection guard is wrong")
 	}
-	open := findDialogButton(s.w.Canvas().Overlays().Top(), "Open")
+	open := findDialogButton(s.w.Canvas().Overlays().Top(), "Takeout archives")
 	if open == nil {
 		t.Fatal("folder navigation missing")
 	}
@@ -458,8 +458,8 @@ func TestFolderPickerBrowseIsExplicitAndSelectionKeepsOpaqueIDInternal(t *testin
 	for _, size := range []fyne.Size{fyne.NewSize(960, 760), fyne.NewSize(800, 640)} {
 		s.w.Resize(size)
 		s.content.Refresh()
-		assertButtonFits(t, s, p.choose, size)
-		assertButtonFits(t, s, p.up, size)
+		assertButtonFits(t, s, &p.choose.Button, size)
+		assertButtonFits(t, s, &p.up.Button, size)
 		captureScreen(t, s, fmt.Sprintf("gui-drive-folder-picker-%d.png", int(size.Width)))
 	}
 	test.Tap(p.choose)
@@ -566,8 +566,8 @@ func TestDiagnosticsAreExplicitOptInCopyableAndCancelable(t *testing.T) {
 		s.content.Refresh()
 		assertWindowFits(t, s, size)
 		captureScreen(t, s, fmt.Sprintf("gui-diagnostics-%d.png", int(size.Width)))
-		assertButtonFits(t, s, v.run, size)
-		assertButtonFits(t, s, v.copy, size)
+		assertButtonFits(t, s, &v.run.Button, size)
+		assertButtonFits(t, s, &v.copy.Button, size)
 	}
 	entered := make(chan struct{})
 	v.diagnose = func(ctx context.Context, _ app.DiagnosticOptions) (app.DiagnosticReport, error) {
@@ -625,7 +625,7 @@ func TestOperationFailureBannerGetsOwnLayoutSpace(t *testing.T) {
 	}, nil, nil)
 	awaitJob(t, s)
 	tapDialogButton(t, s, "Close")
-	if !s.banner.Visible() || s.banner.Position().Y <= 0 {
+	if !s.banner.Visible() || !bannerBelowHeader(s) {
 		t.Fatal("operation error banner overlaps application heading")
 	}
 }
@@ -647,7 +647,7 @@ func TestStartupPreviewStatusAndConfirmedChangesUseInjectedAPI(t *testing.T) {
 	}
 	s.partByPart.SetChecked(true)
 	s.tabs.Select(s.diagnosticsTab)
-	s.diagnosticsTab.Content.(*container.AppTabs).SelectIndex(1)
+	s.diagnosticsTabs.SelectIndex(1)
 	test.Tap(v.buttons["preview"])
 	awaitJob(t, s)
 	test.Tap(v.buttons["status"])
@@ -684,7 +684,7 @@ func TestStartupPreviewStatusAndConfirmedChangesUseInjectedAPI(t *testing.T) {
 		s.content.Refresh()
 		assertWindowFits(t, s, size)
 		for _, key := range []string{"preview", "status", "install", "remove"} {
-			assertButtonFits(t, s, v.buttons[key], size)
+			assertButtonFits(t, s, &v.buttons[key].Button, size)
 		}
 		captureScreen(t, s, fmt.Sprintf("gui-startup-%d.png", int(size.Width)))
 	}
@@ -832,13 +832,13 @@ func TestDestinationPasswordSaveForgetAreExplicitAndNeverExposeSecret(t *testing
 		t.Fatal("saved preferences contain destination password")
 	}
 	s.tabs.Select(s.diagnosticsTab)
-	s.diagnosticsTab.Content.(*container.AppTabs).SelectIndex(2)
+	s.diagnosticsTabs.SelectIndex(2)
 	for _, size := range []fyne.Size{fyne.NewSize(960, 760), fyne.NewSize(800, 640)} {
 		s.w.Resize(size)
 		s.content.Refresh()
 		assertWindowFits(t, s, size)
 		for _, key := range []string{"save-password", "forget-password"} {
-			assertButtonFits(t, s, v.buttons[key], size)
+			assertButtonFits(t, s, &v.buttons[key].Button, size)
 		}
 		captureScreen(t, s, fmt.Sprintf("gui-destination-access-%d.png", int(size.Width)))
 	}

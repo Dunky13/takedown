@@ -56,9 +56,27 @@ func TestWatchKeepsPollingWhenOnlyCurrentJobIsHeld(t *testing.T) {
 		defer a.Close()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		updates, stop := a.Bus.Subscribe(16)
+		defer stop()
 		done := make(chan error, 1)
 		go func() { done <- a.Watch(ctx, WatchOptions{}) }()
 		synctest.Wait()
+		// A held job needs attention but is not an error, so the CLI must not print it as one.
+		held := false
+	drain:
+		for {
+			select {
+			case e := <-updates:
+				if strings.Contains(e.Message, "held for review") {
+					held = e.Kind == events.Warning
+				}
+			default:
+				break drain
+			}
+		}
+		if !held {
+			t.Fatal("a held job was not published as a warning event")
+		}
 		select {
 		case err := <-done:
 			t.Fatalf("held job terminated watch: %v", err)

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/Dunky13/takedown/internal/downloader"
 	"github.com/Dunky13/takedown/internal/model"
 	"github.com/Dunky13/takedown/internal/source"
+	"github.com/ncruces/zenity"
 )
 
 func TestGuideBackAndNextWalkTheFourSteps(t *testing.T) {
@@ -30,7 +32,7 @@ func TestGuideBackAndNextWalkTheFourSteps(t *testing.T) {
 	if s.tabs.Selected() != s.sourceTab || s.back.Visible() || s.next.Text != "Next: Sign in" {
 		t.Fatalf("first step: back visible=%v, next=%q", s.back.Visible(), s.next.Text)
 	}
-	want := [][2]string{{"Back: Choose data", "Next: Save to"}, {"Back: Sign in", "Next: Download"}}
+	want := [][2]string{{"Back", "Next: Save to"}, {"Back", "Next: Download"}}
 	for i, labels := range want {
 		test.Tap(s.next)
 		if s.tabs.Selected() != s.guide[i+1] || s.back.Text != labels[0] || s.next.Text != labels[1] {
@@ -38,7 +40,7 @@ func TestGuideBackAndNextWalkTheFourSteps(t *testing.T) {
 		}
 	}
 	test.Tap(s.next)
-	if s.tabs.Selected() != s.archivesTab || s.next.Visible() || s.back.Text != "Back: Save to" {
+	if s.tabs.Selected() != s.archivesTab || s.next.Visible() || s.back.Text != "Back" {
 		t.Fatalf("last step: next visible=%v back=%q", s.next.Visible(), s.back.Text)
 	}
 	test.Tap(s.back)
@@ -47,8 +49,12 @@ func TestGuideBackAndNextWalkTheFourSteps(t *testing.T) {
 	if s.tabs.Selected() != s.sourceTab || s.back.Visible() {
 		t.Fatal("Back did not return to the first step")
 	}
+	s.source.SetSelected(portabilitySourceLabel) // Jobs cannot be opened for Drive
 	for _, tab := range []*container.TabItem{s.transfersTab, s.jobsTab, s.diagnosticsTab} {
 		s.tabs.Select(tab)
+		if s.tabs.Selected() != tab {
+			t.Fatalf("%q did not open", tab.Text)
+		}
 		if s.back.Visible() || s.next.Visible() {
 			t.Fatalf("guide buttons stayed visible on %q", tab.Text)
 		}
@@ -57,15 +63,15 @@ func TestGuideBackAndNextWalkTheFourSteps(t *testing.T) {
 
 func TestJobsTabFollowsSource(t *testing.T) {
 	s, _ := newTestScreen(t, nil)
-	if !s.jobsTab.Disabled() {
+	if !s.tabs.Disabled(s.jobsTab) {
 		t.Fatal("Jobs tab is usable for Drive")
 	}
 	s.source.SetSelected(portabilitySourceLabel)
-	if s.jobsTab.Disabled() {
+	if s.tabs.Disabled(s.jobsTab) {
 		t.Fatal("Jobs tab is disabled for Data Portability")
 	}
 	s.source.SetSelected(driveSourceLabel)
-	if !s.jobsTab.Disabled() {
+	if !s.tabs.Disabled(s.jobsTab) {
 		t.Fatal("Jobs tab stayed enabled after returning to Drive")
 	}
 }
@@ -320,4 +326,72 @@ func TestStepsRenderForCapture(t *testing.T) {
 	s.resources.SetText(strings.Join(source.Resources()[:3], ", "))
 	s.tabs.Select(s.sourceTab)
 	captureScreen(t, s, "gui-step-1-portability.png")
+}
+
+func TestNativeFileDialogsFillTheirFieldsAndFallBack(t *testing.T) {
+	s, _ := newTestScreen(t, nil)
+	var seen []fileRequest
+	result, resultErr := "", error(nil)
+	release := make(chan struct{})
+	s.openFileDialog = func(_ context.Context, r fileRequest) (string, error) {
+		seen = append(seen, r)
+		<-release
+		return result, resultErr
+	}
+	finish := func(path string, err error) {
+		t.Helper()
+		result, resultErr = path, err
+		release <- struct{}{}
+		awaitUIState(t, func() bool { return !s.picking })
+	}
+
+	s.pickDestination()
+	s.pickDestination() // a second click must not stack another OS dialog
+	finish("/chosen/folder", nil)
+	if s.destination.Text != "/chosen/folder" || len(seen) != 1 || seen[0].jsonOnly {
+		t.Fatalf("destination %q requests %+v", s.destination.Text, seen)
+	}
+
+	before := s.oauthClient.Text
+	s.pickOAuthClient()
+	finish("", zenity.ErrCanceled)
+	if s.oauthClient.Text != before || !seen[1].jsonOnly {
+		t.Fatalf("cancel changed client to %q, request %+v", s.oauthClient.Text, seen[1])
+	}
+
+	s.pickOAuthClient()
+	finish("/chosen/client.json", nil)
+	if s.oauthClient.Text != "/chosen/client.json" {
+		t.Fatalf("client %q", s.oauthClient.Text)
+	}
+
+	s.pickDestination()
+	finish("", &exec.Error{Name: "zenity", Err: exec.ErrNotFound})
+	if overlay := s.w.Canvas().Overlays().Top(); overlay == nil {
+		t.Fatal("no Fyne dialog offered when the OS has no native dialog tool")
+	} else {
+		s.w.Canvas().Overlays().Remove(overlay)
+	}
+	if s.destination.Text != "/chosen/folder" {
+		t.Fatalf("fallback changed destination to %q", s.destination.Text)
+	}
+
+	s.setBusy(true)
+	s.pickDestination()
+	if s.picking {
+		t.Fatal("file dialog opened while busy")
+	}
+	s.setBusy(false)
+}
+
+func TestExistingFolderWalksUpAndSkipsNetworkDestinations(t *testing.T) {
+	dir := t.TempDir()
+	if got := existingFolder(filepath.Join(dir, "missing", "deeper")); got != dir {
+		t.Fatalf("got %q, want %q", got, dir)
+	}
+	for _, path := range []string{"", "  ", "smb://user@host/share", "sftp://user@host/path", `\\host\share`} {
+		if got := existingFolder(path); got != "" {
+			t.Fatalf("%q gave %q", path, got)
+		}
+	}
 }
