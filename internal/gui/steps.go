@@ -53,7 +53,7 @@ func (s *screen) syncGuide() {
 	s.stepper.setCurrent(at)
 	setVisible(s.savePrefs, at >= 0)
 	s.syncToolbar()
-	s.content.Refresh()
+	relayout(s.content)
 }
 
 // syncToolbar marks the open tool page and mirrors which pages are usable.

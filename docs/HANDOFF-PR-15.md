@@ -118,3 +118,11 @@ half row); a banner takes about one more.
    Windows and Linux. Only the unsigned macOS panel has been seen.
 5. Consider later: step completion marks, which need a truthful local
    authorization check, and a free-space buffer entered in GB instead of bytes.
+
+## Test time under the race detector
+
+Step changes and busy toggles used `Container.Refresh` on the whole window,
+which refreshed every widget on every page and re-rendered every checkbox icon.
+On the macOS Intel CI runner that pushed `internal/gui` past Go's 10-minute test
+timeout under `-race`. `relayout` in `widgets.go` now re-runs only the container
+layouts. Locally the GUI package under `-race` went from 580 s to 204 s.

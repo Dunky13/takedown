@@ -60,7 +60,7 @@ func (n *navigator) show(index int) {
 	for i, page := range n.stack.Objects {
 		setVisible(page, i == index)
 	}
-	n.stack.Refresh()
+	relayout(n.stack)
 }
 
 // setPage shows page for item instead of item.Content, which stays the

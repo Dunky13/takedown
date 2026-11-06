@@ -162,7 +162,7 @@ func (s *screen) updateSourceLabels() {
 	}
 	s.updateSummary()
 	s.disclosure.SetText(s.accessDisclosure())
-	s.content.Refresh()
+	relayout(s.content)
 }
 
 func (s *screen) updateSummary() {
@@ -325,6 +325,6 @@ func (s *screen) startWatch() {
 		s.watching = true
 		s.cancelButton.SetText("Stop watching")
 		s.startTransfers()
-		s.content.Refresh()
+		relayout(s.content)
 	})
 }

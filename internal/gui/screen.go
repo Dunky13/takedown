@@ -363,7 +363,7 @@ func (s *screen) setBusy(busy bool) {
 		s.cancelButton.SetText("Stop")
 	}
 	if s.content != nil {
-		s.content.Refresh()
+		relayout(s.content)
 	}
 }
 
@@ -417,7 +417,7 @@ func (s *screen) run(message string, work func(context.Context, sourceSnapshot) 
 				} else {
 					s.status.SetText("Ready.")
 				}
-				s.content.Refresh()
+				relayout(s.content)
 				if done != nil {
 					done(err, binding)
 				} else {
@@ -459,7 +459,7 @@ func (s *screen) notice(text string) {
 	s.banner.SetText(clipText(text, bannerLimit))
 	s.banner.Show()
 	if s.content != nil {
-		s.content.Refresh()
+		relayout(s.content)
 	}
 }
 

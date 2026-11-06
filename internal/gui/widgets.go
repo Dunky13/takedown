@@ -230,6 +230,9 @@ type panel struct {
 	content fyne.CanvasObject
 }
 
+func (s *surface) inner() fyne.CanvasObject { return s.content }
+func (p *panel) inner() fyne.CanvasObject   { return p.content }
+
 func newPanel(content fyne.CanvasObject) *panel {
 	p := &panel{content: content}
 	p.ExtendBaseWidget(p)
@@ -643,4 +646,31 @@ func resultPanel(title string, copy *button, text *widget.Label) fyne.CanvasObje
 	}
 	header := border(nil, nil, widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), trailing, nil)
 	return newPanel(border(header, nil, nil, nil, container.NewVScroll(text)))
+}
+
+// relayout re-runs the layouts of o and its nested containers, then repaints.
+// Container.Refresh would also refresh every widget below, re-rendering every
+// icon on every page, which made each step change and busy toggle slow.
+func relayout(o fyne.CanvasObject) {
+	var walk func(fyne.CanvasObject)
+	walk = func(o fyne.CanvasObject) {
+		if w, ok := o.(interface{ inner() fyne.CanvasObject }); ok {
+			walk(w.inner())
+			return
+		}
+		c, ok := o.(*fyne.Container)
+		if !ok {
+			return
+		}
+		if c.Layout != nil {
+			c.Layout.Layout(c.Objects, c.Size())
+		}
+		for _, child := range c.Objects {
+			walk(child)
+		}
+	}
+	walk(o)
+	if c := fyne.CurrentApp().Driver().CanvasForObject(o); c != nil {
+		c.Refresh(o)
+	}
 }

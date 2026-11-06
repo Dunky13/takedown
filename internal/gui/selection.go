@@ -194,6 +194,6 @@ func (s *screen) updateSelectionSummary() {
 			s.find.Importance = widget.MediumImportance
 		}
 		s.find.Refresh()
-		s.content.Refresh()
+		relayout(s.content)
 	}
 }
