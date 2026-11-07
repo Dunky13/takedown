@@ -23,20 +23,59 @@ if [[ ${1:-} == api && ${2:-} == --hostname ]]; then exec "$FIXTURE/bin/gh" "$@"
 for arg in "$@"; do [[ $arg != --clobber* ]] || { echo 'overwrite forbidden' >&2; exit 1; }; done
 if [[ $1 == api ]]; then
   if [[ $2 == --method ]]; then
-    [[ $3 == POST && $4 == */git/refs && ! -f $MOCK_STATE/ref ]] || exit 1
-    if [[ ${MOCK_TAG_COLLISION:-false} == true ]]; then
-      printf '{"object":{"type":"commit","sha":"0000000000000000000000000000000000000000"}}\n' > "$MOCK_STATE/ref"
-      echo 'gh: Reference already exists (HTTP 422)' >&2
-      exit 1
+    if [[ $3 == POST && $4 == */git/refs ]]; then
+      [[ ! -f $MOCK_STATE/ref ]] || exit 1
+      if [[ ${MOCK_TAG_COLLISION:-false} == true ]]; then
+        printf '{"object":{"type":"commit","sha":"0000000000000000000000000000000000000000"}}\n' > "$MOCK_STATE/ref"
+        echo 'gh: Reference already exists (HTTP 422)' >&2
+        exit 1
+      fi
+      [[ $5 == -f && $6 == ref=refs/tags/* && $7 == -f && $8 == "sha=$EXPECTED_SHA" ]] || exit 1
+      printf '{"object":{"type":"commit","sha":"%s"}}\n' "$EXPECTED_SHA" > "$MOCK_STATE/ref"
+      cat "$MOCK_STATE/ref"
+    elif [[ $3 == POST && $4 == "repos/$GH_REPO/releases" ]]; then
+      [[ ! -f $MOCK_STATE/release && -f $MOCK_STATE/ref && $5 == --input ]] || exit 1
+      jq -e --arg sha "$EXPECTED_SHA" '.target_commitish == $sha and .draft == true and .make_latest == "false"' "$6" >/dev/null
+      jq '. + {id:1}' "$6" > "$MOCK_STATE/release"
+      jq -j .body "$6" > "$MOCK_STATE/notes"
+      if [[ ${MOCK_LOST_CREATE:-false} == true ]]; then exit 1; fi
+      if [[ -n ${MOCK_CREATE_RECEIPT_MUTATION:-} ]]; then jq "$MOCK_CREATE_RECEIPT_MUTATION" "$MOCK_STATE/release"; else cat "$MOCK_STATE/release"; fi
+    elif [[ $3 == POST && $4 == "https://uploads.github.com/repos/$GH_REPO/releases/1/assets?name="* ]]; then
+      [[ $(jq -r .draft "$MOCK_STATE/release") == true && $5 == -H && $6 == 'Content-Type: application/octet-stream' && $7 == --input ]] || exit 1
+      item=$8; name=${item##*/}
+      encoded=$(jq -nr --arg name "$name" '$name | @uri')
+      [[ $4 == *"?name=$encoded" ]] || exit 1
+      if jq -e --arg name "$name" 'any(.[]; .name == $name)' "$MOCK_STATE/assets" >/dev/null; then
+        echo 'gh: asset already exists (HTTP 422)' >&2; exit 1
+      fi
+      [[ ${MOCK_DROP_UPLOAD:-false} != true ]] || exit 0
+      id=$((100 + $(jq length "$MOCK_STATE/assets")))
+      cp "$item" "$MOCK_STATE/bytes/$id"
+      jq -n --arg name "$name" --argjson id "$id" --argjson size "$(wc -c < "$item")" \
+        '{id:$id,name:$name,state:"uploaded",size:$size}' > "$MOCK_STATE/upload"
+      jq --slurpfile asset "$MOCK_STATE/upload" '. + $asset' "$MOCK_STATE/assets" > "$MOCK_STATE/assets.tmp"
+      mv "$MOCK_STATE/assets.tmp" "$MOCK_STATE/assets"
+      if [[ ${MOCK_CORRUPT_UPLOAD:-false} == true || ${MOCK_UPLOAD_COLLISION:-false} == true ]]; then
+        printf 'corrupt remote bytes\n' > "$MOCK_STATE/bytes/$id"
+      fi
+      [[ ${MOCK_FAIL_UPLOAD:-false} != true && ${MOCK_UPLOAD_COLLISION:-false} != true ]] || exit 1
+      if [[ -n ${MOCK_UPLOAD_RECEIPT_MUTATION:-} ]]; then jq "$MOCK_UPLOAD_RECEIPT_MUTATION" "$MOCK_STATE/upload"; else cat "$MOCK_STATE/upload"; fi
+    elif [[ $3 == PATCH && $4 == "repos/$GH_REPO/releases/1" ]]; then
+      [[ $(jq -r .draft "$MOCK_STATE/release") == true && $5 == --input ]] || exit 1
+      jq -e '.draft == false' "$6" >/dev/null
+      jq --slurpfile update "$6" '. + $update[0]' "$MOCK_STATE/release" > "$MOCK_STATE/release.tmp"
+      mv "$MOCK_STATE/release.tmp" "$MOCK_STATE/release"
+      jq -j .body "$6" > "$MOCK_STATE/notes"
+      [[ ${MOCK_LOST_PUBLISH:-false} != true ]] || exit 1
+      if [[ -n ${MOCK_PUBLISH_RECEIPT_MUTATION:-} ]]; then jq "$MOCK_PUBLISH_RECEIPT_MUTATION" "$MOCK_STATE/release"; else cat "$MOCK_STATE/release"; fi
+    else
+      echo 'unexpected API mutation' >&2; exit 1
     fi
-    [[ $5 == -f && $6 == ref=refs/tags/* && $7 == -f && $8 == "sha=$EXPECTED_SHA" ]] || exit 1
-    printf '{"object":{"type":"commit","sha":"%s"}}\n' "$EXPECTED_SHA" > "$MOCK_STATE/ref"
-    cat "$MOCK_STATE/ref"
   elif [[ $2 == --paginate && $3 == */releases\?* ]]; then
     if [[ ${MOCK_API_ERROR:-false} == true ]]; then echo 'gh: Forbidden (HTTP 403)' >&2; exit 1; fi
     # Two pages exercise the authenticated draft discovery path.
     echo '[]'
-    if [[ -f $MOCK_STATE/release ]]; then
+    if [[ -f $MOCK_STATE/release && ${MOCK_STALE_RELEASE_LIST:-false} != true ]]; then
       jq -s '.' "$MOCK_STATE/release"
       [[ ${MOCK_DUPLICATE_RELEASE:-false} != true ]] || jq -s '.' "$MOCK_STATE/release"
     else
@@ -54,46 +93,14 @@ if [[ $1 == api ]]; then
     cat "$MOCK_STATE/bytes/$id"
   elif [[ $2 == */git/ref/tags/* && -f $MOCK_STATE/ref ]]; then
     cat "$MOCK_STATE/ref"
+  elif [[ $2 == "repos/$GH_REPO/releases/1" && -f $MOCK_STATE/release ]]; then
+    if [[ -n ${MOCK_EXACT_RELEASE_MUTATION:-} ]]; then jq "$MOCK_EXACT_RELEASE_MUTATION" "$MOCK_STATE/release"; else cat "$MOCK_STATE/release"; fi
   elif [[ ${MOCK_AUTOMATION_SHA:-} != '' && ( $2 == */branches/main || $2 == */compare/* || $2 == --paginate ) ]]; then
     exec bash "$MOCK_AUTOMATION_FIXTURE" "$@"
   else
     printf 'gh: Not Found (HTTP 404)\n' >&2
     exit 1
   fi
-elif [[ $1 == release && $2 == create ]]; then
-  [[ ! -f $MOCK_STATE/release && -f $MOCK_STATE/ref ]] || exit 1
-  tag=$3; shift 3
-  prerelease=''; target=''
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      --prerelease=*) prerelease=${1#*=} ;;
-      --target) target=$2; shift ;;
-      --notes-file) cp "$2" "$MOCK_STATE/notes"; shift ;;
-    esac
-    shift
-  done
-  [[ $target == "$EXPECTED_SHA" && ( $prerelease == true || $prerelease == false ) ]] || exit 1
-  jq -n --arg tag "$tag" --arg target "$target" --argjson prerelease "$prerelease" \
-    '{id:1,draft:true,tag_name:$tag,target_commitish:$target,prerelease:$prerelease}' > "$MOCK_STATE/release"
-elif [[ $1 == release && $2 == upload ]]; then
-  [[ $(jq -r .draft "$MOCK_STATE/release") == true && $# == 4 ]] || exit 1
-  item=$4; name=${item##*/}
-  if jq -e --arg name "$name" 'any(.[]; .name == $name)' "$MOCK_STATE/assets" >/dev/null; then
-    echo 'gh: asset already exists (HTTP 422)' >&2; exit 1
-  fi
-  [[ ${MOCK_DROP_UPLOAD:-false} != true ]] || exit 0
-  id=$((100 + $(jq length "$MOCK_STATE/assets")))
-  cp "$item" "$MOCK_STATE/bytes/$id"
-  jq --arg name "$name" --argjson id "$id" '. + [{id:$id,name:$name,state:"uploaded"}]' "$MOCK_STATE/assets" > "$MOCK_STATE/assets.tmp"
-  mv "$MOCK_STATE/assets.tmp" "$MOCK_STATE/assets"
-  if [[ ${MOCK_CORRUPT_UPLOAD:-false} == true || ${MOCK_UPLOAD_COLLISION:-false} == true ]]; then
-    printf 'corrupt remote bytes\n' > "$MOCK_STATE/bytes/$id"
-  fi
-  [[ ${MOCK_FAIL_UPLOAD:-false} != true && ${MOCK_UPLOAD_COLLISION:-false} != true ]] || exit 1
-elif [[ $1 == release && $2 == edit ]]; then
-  [[ $(jq -r .draft "$MOCK_STATE/release") == true ]] || exit 1
-  jq '.draft=false' "$MOCK_STATE/release" > "$MOCK_STATE/release.tmp"
-  mv "$MOCK_STATE/release.tmp" "$MOCK_STATE/release"
 else
   echo 'unexpected gh fixture command' >&2
   exit 1
@@ -171,7 +178,7 @@ reset_fixture() {
 publish() { bash scripts/publish-release.sh "$WORK/plan" "$WORK/artifacts" > "$WORK/log" 2>&1; }
 reject() { if publish; then cat "$WORK/log"; echo 'expected publication rejection' >&2; exit 1; fi; }
 no_writes() { if grep -Eq '^api --method|^release (create|upload|edit)' "$MOCK_STATE/calls" 2>/dev/null; then echo 'unexpected remote write' >&2; exit 1; fi; }
-no_publish() { if grep -q '^release edit' "$MOCK_STATE/calls"; then echo 'unexpected publication' >&2; exit 1; fi; }
+no_publish() { if grep -q '^api --method PATCH' "$MOCK_STATE/calls"; then echo 'unexpected publication' >&2; exit 1; fi; }
 clear_calls() { : > "$MOCK_STATE/calls"; }
 mutate() { jq "$2" "$1" > "$WORK/mutated.json"; mv "$WORK/mutated.json" "$1"; }
 partial_draft() {
@@ -183,12 +190,70 @@ partial_draft() {
   clear_calls
 }
 
+# A successful write may precede release-list visibility. Keep that list stale
+# for the whole invocation: the write receipt and exact ID must be sufficient.
+reset_fixture manual
+MOCK_STALE_RELEASE_LIST=true publish
+[[ $(jq -r .draft "$MOCK_STATE/release") == false && $(jq length "$MOCK_STATE/assets") == 8 ]]
+[[ $(grep -c '^api --paginate .*releases?per_page=' "$MOCK_STATE/calls") == 1 ]]
+echo 'PASS: publication does not rediscover a newly created draft through a stale list'
+
+reset_fixture nightly
+MOCK_STALE_RELEASE_LIST=true publish
+jq -e '.prerelease == true and .make_latest == "false" and .draft == false' "$MOCK_STATE/release" >/dev/null
+[[ $(jq length "$MOCK_STATE/assets") == 8 ]]
+echo 'PASS: signed nightly publication uses the same ID-bound path and preserves prerelease/Latest policy'
+
+# Creation and upload failures leave the original draft intact for reconciliation;
+# the same invocation never repeats an uncertain write.
+for operation in CREATE PUBLISH; do
+  reset_fixture manual
+  export "MOCK_LOST_$operation=true"
+  reject
+  unset "MOCK_LOST_$operation"
+  [[ -f $MOCK_STATE/release ]]
+  clear_calls
+  publish
+  [[ $(jq -r .draft "$MOCK_STATE/release") == false && $(jq length "$MOCK_STATE/assets") == 8 ]]
+  if [[ $operation == PUBLISH ]]; then no_writes; fi
+  if grep -q "^api --method POST repos/$GH_REPO/releases --input" "$MOCK_STATE/calls"; then exit 1; fi
+done
+echo 'PASS: lost creation/publication responses reconcile the retained ID without duplicate releases or overwrites'
+
+for mutation in '.id=0' '.tag_name="v9.9.9"' '.target_commitish="main"' '.draft=false' '.prerelease=false'; do
+  reset_fixture manual
+  MOCK_CREATE_RECEIPT_MUTATION=$mutation reject
+  no_publish
+  [[ $(jq length "$MOCK_STATE/assets") == 0 ]]
+done
+for mutation in '.id=2' '.tag_name="v9.9.9"' '.target_commitish="main"' '.draft=false' '.prerelease=false'; do
+  reset_fixture manual
+  MOCK_EXACT_RELEASE_MUTATION=$mutation reject
+  no_publish
+  [[ $(jq length "$MOCK_STATE/assets") == 0 ]]
+done
+for mutation in '.id=0' '.name="unexpected.exe"' '.size+=1' '.state="starter"'; do
+  reset_fixture manual
+  MOCK_UPLOAD_RECEIPT_MUTATION=$mutation reject
+  no_publish
+  [[ $(jq length "$MOCK_STATE/assets") == 1 ]]
+done
+for mutation in '.id=2' '.target_commitish="main"' '.draft=true'; do
+  reset_fixture manual
+  MOCK_PUBLISH_RECEIPT_MUTATION=$mutation reject
+  [[ $(jq -r .draft "$MOCK_STATE/release") == false ]]
+  clear_calls
+  publish
+  no_writes
+done
+echo 'PASS: invalid write receipts and changed exact-ID objects fail closed; publication retries reconcile read-only'
+if [[ ${1:-} == --publication-recovery-only ]]; then exit 0; fi
+
 reset_fixture manual
 publish
-grep -Fq -- '--latest=false' "$MOCK_STATE/calls"
-grep -Fq -- "--target $EXPECTED_SHA" "$MOCK_STATE/calls"
+jq -e --arg sha "$EXPECTED_SHA" '.make_latest == "false" and .target_commitish == $sha' "$MOCK_STATE/release" >/dev/null
 [[ $(jq -r .draft "$MOCK_STATE/release") == false && $(jq length "$MOCK_STATE/assets") == 8 ]]
-[[ $(grep -c '^api --allow-escape-sequences -H' "$MOCK_STATE/calls") == 8 ]]
+[[ $(grep -c '^api --allow-escape-sequences -H' "$MOCK_STATE/calls") == 16 ]]
 # An identical published release is a read-only success, including byte downloads.
 clear_calls
 publish
@@ -210,10 +275,10 @@ if grep -q 'unsigned development' "$MOCK_STATE/notes"; then exit 1; fi
 
 reset_fixture manual '1.2.0+build-meta'
 publish
-grep -q -- '--latest=true' "$MOCK_STATE/calls"
+jq -e '.make_latest == "true"' "$MOCK_STATE/release" >/dev/null
 reset_fixture auto '1.2.1'
 publish
-grep -q -- '--latest=true' "$MOCK_STATE/calls"
+jq -e '.make_latest == "true"' "$MOCK_STATE/release" >/dev/null
 
 # Pre-policy candidates remain publishable only through every original
 # signer/Accepted-log/native/fresh-acceptance binding and remote-byte gate.
@@ -316,11 +381,11 @@ partial_draft
 before=$(hash "$MOCK_STATE/bytes/100")
 existing=$(jq -r '.[0].name' "$MOCK_STATE/assets")
 GITHUB_RUN_ID=98765 GITHUB_RUN_ATTEMPT=9 publish
-grep -q '^release upload' "$MOCK_STATE/calls"
+grep -q '^api --method POST https://uploads.github.com/' "$MOCK_STATE/calls"
 [[ $(jq -r .draft "$MOCK_STATE/release") == false && $(jq length "$MOCK_STATE/assets") == 8 ]]
-[[ $(hash "$MOCK_STATE/bytes/100") == "$before" && $(grep -c '^release upload' "$MOCK_STATE/calls") == 7 ]]
-if grep '^release upload' "$MOCK_STATE/calls" | grep -Fq "/$existing"; then exit 1; fi
-[[ $(grep -c '^api --allow-escape-sequences -H' "$MOCK_STATE/calls") == 9 ]] # existing byte, then all eight
+[[ $(hash "$MOCK_STATE/bytes/100") == "$before" && $(grep -c '^api --method POST https://uploads.github.com/' "$MOCK_STATE/calls") == 7 ]]
+if grep '^api --method POST https://uploads.github.com/' "$MOCK_STATE/calls" | grep -Fq "/$existing"; then exit 1; fi
+[[ $(grep -c '^api --allow-escape-sequences -H' "$MOCK_STATE/calls") == 16 ]] # existing byte, seven upload receipts, then all eight
 
 reset_fixture manual
 partial_draft

@@ -192,6 +192,13 @@ validate_release() {
     (.draft | type == "boolean") and (.id | type == "number" and . > 0 and floor == .)
   ' "$WORK/release.json" >/dev/null || fail 'release tag, target or version metadata differs from plan'
 }
+read_release() {
+  # Lists can lag successful writes. Once known, the numeric ID is the authority
+  # for this invocation; never rediscover it by tag or accept another object.
+  gh api "repos/$GH_REPO/releases/$release_id" > "$WORK/release.json"
+  validate_release
+  [[ $(jq -r .id "$WORK/release.json") == "$release_id" ]] || fail 'release ID changed'
+}
 validate_tag() {
   [[ $(jq -r .object.type "$WORK/ref.json") == commit && $(jq -r .object.sha "$WORK/ref.json") == "$sha" ]] || fail 'existing tag does not match planned source'
 }
@@ -228,6 +235,7 @@ if [[ $(jq length "$WORK/matching-releases.json") == 1 ]]; then
   exists=true
   validate_release
   release_id=$(jq -r .id "$WORK/release.json")
+  read_release
   [[ $(jq -r .draft "$WORK/release.json") == true ]] || published=true
 fi
 tag_exists=false
@@ -254,28 +262,47 @@ fi
 gh api "repos/$GH_REPO/git/ref/tags/$tag" > "$WORK/ref.json"
 validate_tag
 if [[ $exists == false ]]; then
-  gh release create "$tag" --verify-tag --target "$sha" --draft --latest=false --title "$tag" --notes-file "$WORK/notes.md" --prerelease="$prerelease"
-  release_lookup
+  jq -n --arg tag "$tag" --arg sha "$sha" --argjson prerelease "$prerelease" --rawfile notes "$WORK/notes.md" \
+    '{tag_name:$tag,target_commitish:$sha,name:$tag,body:$notes,draft:true,prerelease:$prerelease,make_latest:"false"}' > "$WORK/create.json"
+  gh api --method POST "repos/$GH_REPO/releases" --input "$WORK/create.json" > "$WORK/release.json"
   validate_release
   release_id=$(jq -r .id "$WORK/release.json")
   [[ $(jq -r .draft "$WORK/release.json") == true ]] || fail 'new release is not a draft'
+  read_release
+  [[ $(jq -r .draft "$WORK/release.json") == true ]] || fail 'new draft changed after creation'
   verify_remote false
 fi
 for name in "${expected[@]}" SHA256SUMS; do
   if ! grep -Fxq -- "$name" "$WORK/remote-assets"; then
+    read_release
+    [[ $(jq -r .draft "$WORK/release.json") == true ]] || fail 'draft changed before upload'
     # Append only. A concurrent name collision is terminal, preserving its bytes.
-    gh release upload "$tag" "$WORK/assets/$name"
+    encoded=$(jq -nr --arg name "$name" '$name | @uri')
+    gh api --method POST "https://uploads.github.com/repos/$GH_REPO/releases/$release_id/assets?name=$encoded" \
+      -H 'Content-Type: application/octet-stream' --input "$WORK/assets/$name" > "$WORK/upload.json"
+    size=$(wc -c < "$WORK/assets/$name")
+    jq -e --arg name "$name" --argjson size "$size" '
+      (.id | type == "number" and . > 0 and floor == .) and
+      .name == $name and .state == "uploaded" and .size == $size
+    ' "$WORK/upload.json" >/dev/null || fail "invalid upload receipt: $name"
+    id=$(jq -r .id "$WORK/upload.json")
+    gh api --allow-escape-sequences -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$id" > "$WORK/download"
+    cmp -s "$WORK/assets/$name" "$WORK/download" || fail "remote asset bytes differ: $name"
   fi
 done
 # Re-read the complete inventory and download every byte before publication.
 verify_remote true
-original_id=$release_id
-release_lookup
-validate_release
-[[ $(jq -r .id "$WORK/release.json") == "$original_id" && $(jq -r .draft "$WORK/release.json") == true ]] || fail 'draft changed during publication'
+read_release
+[[ $(jq -r .draft "$WORK/release.json") == true ]] || fail 'draft changed during publication'
 gh api "repos/$GH_REPO/git/ref/tags/$tag" > "$WORK/ref.json"
 validate_tag
 latest=true
 [[ $prerelease == false ]] || latest=false
-gh release edit "$tag" --draft=false --latest="$latest" --prerelease="$prerelease" --notes-file "$WORK/notes.md"
+jq -n --arg latest "$latest" --argjson prerelease "$prerelease" --rawfile notes "$WORK/notes.md" \
+  '{draft:false,make_latest:$latest,prerelease:$prerelease,body:$notes}' > "$WORK/publish.json"
+gh api --method PATCH "repos/$GH_REPO/releases/$release_id" --input "$WORK/publish.json" > "$WORK/release.json"
+validate_release
+[[ $(jq -r .id "$WORK/release.json") == "$release_id" && $(jq -r .draft "$WORK/release.json") == false ]] || fail 'invalid publication receipt'
+read_release
+[[ $(jq -r .draft "$WORK/release.json") == false ]] || fail 'release is still a draft after publication'
 printf 'Published %s from %s\n' "$tag" "$sha"
